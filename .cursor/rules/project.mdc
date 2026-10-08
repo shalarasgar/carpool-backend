@@ -1,0 +1,12 @@
+---
+description: Go carpooling backend rules
+alwaysApply: true
+---
+- Full spec is in docs/PROJECT_SPEC.md. Read the relevant sections before implementing anything.
+- Stack: Go 1.22+, chi, pgx/v5, sqlc, golang-migrate, slog. Do not add other frameworks or ORMs.
+- Layering: handlers (internal/http) -> services (internal/service) -> store (sqlc). No business logic in handlers, no HTTP types in services.
+- Never edit sqlc-generated code by hand; change db/queries/*.sql and run `make sqlc`.
+- Every change must compile: run `go build ./...` and `go test ./...` before finishing.
+- Never log OTP codes, tokens or full phone numbers.
+- Do not add features not listed in the spec (no payments, chat, maps APIs).
+- If something is ambiguous, pick the simplest option and note it in README.

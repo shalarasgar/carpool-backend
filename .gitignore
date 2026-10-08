@@ -1,0 +1,22 @@
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Go
+/bin/
+/tmp/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Uploads (kullanıcı fotoğrafları)
+/uploads/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

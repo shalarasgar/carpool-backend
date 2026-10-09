@@ -1,0 +1,21 @@
+DROP TABLE IF EXISTS device_tokens;
+DROP TABLE IF EXISTS sms_queue;
+DROP TABLE IF EXISTS sms_gateways;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS otp_codes;
+DROP TABLE IF EXISTS reports;
+DROP TABLE IF EXISTS user_blocks;
+DROP TABLE IF EXISTS reviews;
+DROP TABLE IF EXISTS bookings;
+DROP TABLE IF EXISTS trip_stops;
+DROP TABLE IF EXISTS trips;
+DROP TABLE IF EXISTS vehicles;
+DROP TABLE IF EXISTS locations;
+DROP TABLE IF EXISTS users;
+
+DROP FUNCTION IF EXISTS set_updated_at();
+
+DROP TYPE IF EXISTS sms_status;
+DROP TYPE IF EXISTS booking_status;
+DROP TYPE IF EXISTS trip_status;
+DROP TYPE IF EXISTS location_type;

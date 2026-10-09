@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: carpool
+      POSTGRES_PASSWORD: carpool
+      POSTGRES_DB: carpool
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carpool -d carpool"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      APP_NAME: carpool
+      PORT: "8080"
+      DEV_MODE: "true"
+      DATABASE_URL: postgres://carpool:carpool@postgres:5432/carpool?sslmode=disable
+      JWT_SECRET: dev-jwt-secret-change-me
+      OTP_HMAC_SECRET: dev-otp-hmac-secret-change
+      ADMIN_TOKEN: dev-admin-token-change
+      MIGRATE_ON_START: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

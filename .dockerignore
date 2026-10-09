@@ -1,0 +1,10 @@
+.git
+.cursor
+.env
+.env.*
+!.env.example
+bin
+tmp
+uploads
+*.md
+docs

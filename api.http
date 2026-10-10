@@ -1,0 +1,327 @@
+# Carpool API examples for the VS Code REST Client and the JetBrains HTTP Client.
+# Fill the variables, then send the requests from top to bottom.
+# With DEV_MODE=true, request-otp returns dev_code. Copy tokens and ids into the variables above.
+
+@baseUrl = http://localhost:8080
+@accessToken = replace-with-access-token
+@passengerToken = replace-with-passenger-access-token
+@refreshToken = replace-with-refresh-token
+@adminToken = replace-with-admin-token
+@gatewayKey = replace-with-gateway-api-key
+@userId = 00000000-0000-4000-8000-000000000001
+@otherUserId = 00000000-0000-4000-8000-000000000002
+@vehicleId = 00000000-0000-4000-8000-000000000003
+@tripId = 00000000-0000-4000-8000-000000000004
+@bookingId = 00000000-0000-4000-8000-000000000005
+@reportId = 00000000-0000-4000-8000-000000000006
+@notificationId = 00000000-0000-4000-8000-000000000007
+@smsId = 00000000-0000-4000-8000-000000000008
+@photoName = 0123456789abcdef0123456789abcdef.jpg
+@fromLocationId = c2000000-0000-4000-8000-000000000001
+@toLocationId = c2000000-0000-4000-8000-000000000008
+@locationId = c2000000-0000-4000-8000-000000000001
+
+### Liveness
+GET {{baseUrl}}/healthz
+
+### Readiness
+GET {{baseUrl}}/readyz
+
+### Request OTP
+POST {{baseUrl}}/v1/auth/request-otp
+Content-Type: application/json
+Accept-Language: tk
+
+{
+  "phone": "+99365123456",
+  "device_id": "rest-client"
+}
+
+### Verify OTP
+POST {{baseUrl}}/v1/auth/verify-otp
+Content-Type: application/json
+
+{
+  "phone": "+99365123456",
+  "code": "482913",
+  "device_id": "rest-client"
+}
+
+### Refresh tokens
+POST {{baseUrl}}/v1/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refreshToken}}"
+}
+
+### Logout
+POST {{baseUrl}}/v1/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### List locations
+GET {{baseUrl}}/v1/locations?type=city&q=mary&active_only=true
+Accept-Language: ru
+
+### Get own profile
+GET {{baseUrl}}/v1/me
+Authorization: Bearer {{accessToken}}
+
+### Update own profile
+PATCH {{baseUrl}}/v1/me
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Aýna Amanowa",
+  "locale": "tk"
+}
+
+### Upload profile photo
+# Place a small JPEG at face.jpg next to this file. The server sniffs the bytes.
+POST {{baseUrl}}/v1/me/photo
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=PhotoBoundary
+
+--PhotoBoundary
+Content-Disposition: form-data; name="photo"; filename="face.jpg"
+Content-Type: image/jpeg
+
+< ./face.jpg
+--PhotoBoundary--
+
+### Download a profile photo
+GET {{baseUrl}}/v1/media/photos/{{photoName}}
+
+### Public profile
+GET {{baseUrl}}/v1/users/{{userId}}
+Authorization: Bearer {{accessToken}}
+
+### Delete own account
+DELETE {{baseUrl}}/v1/me
+Authorization: Bearer {{accessToken}}
+
+### List my vehicles
+GET {{baseUrl}}/v1/me/vehicles
+Authorization: Bearer {{accessToken}}
+
+### Create a vehicle
+POST {{baseUrl}}/v1/me/vehicles
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "brand": "Toyota",
+  "model": "Camry",
+  "color": "ak",
+  "plate": "AG1234AB"
+}
+
+### Update a vehicle
+PATCH {{baseUrl}}/v1/me/vehicles/{{vehicleId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "color": "gara"
+}
+
+### Delete a vehicle
+DELETE {{baseUrl}}/v1/me/vehicles/{{vehicleId}}
+Authorization: Bearer {{accessToken}}
+
+### Search trips
+GET {{baseUrl}}/v1/trips?from={{fromLocationId}}&to={{toLocationId}}&date=2026-12-01&seats=1&page=1
+Authorization: Bearer {{passengerToken}}
+Accept-Language: en
+
+### Create a trip
+POST {{baseUrl}}/v1/trips
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "vehicle_id": "{{vehicleId}}",
+  "from_location_id": "{{fromLocationId}}",
+  "to_location_id": "{{toLocationId}}",
+  "departs_at": "2026-12-01T08:00:00Z",
+  "seats_total": 3,
+  "suggested_price": "25.50",
+  "currency": "TMT",
+  "pickup_note": "Ashgabat bus station",
+  "dropoff_note": "Mary center",
+  "note": "One bag each"
+}
+
+### Get a trip
+GET {{baseUrl}}/v1/trips/{{tripId}}
+Authorization: Bearer {{accessToken}}
+
+### Update a trip
+PATCH {{baseUrl}}/v1/trips/{{tripId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "seats_total": 2,
+  "note": "No smoking"
+}
+
+### Cancel a trip
+POST {{baseUrl}}/v1/trips/{{tripId}}/cancel
+Authorization: Bearer {{accessToken}}
+
+### Complete a trip
+POST {{baseUrl}}/v1/trips/{{tripId}}/complete
+Authorization: Bearer {{accessToken}}
+
+### List my trips
+GET {{baseUrl}}/v1/me/trips?status=active&page=1
+Authorization: Bearer {{accessToken}}
+
+### Request a seat
+POST {{baseUrl}}/v1/trips/{{tripId}}/bookings
+Authorization: Bearer {{passengerToken}}
+Content-Type: application/json
+
+{
+  "seats": 1
+}
+
+### List bookings on a trip
+GET {{baseUrl}}/v1/trips/{{tripId}}/bookings
+Authorization: Bearer {{accessToken}}
+
+### List my bookings
+GET {{baseUrl}}/v1/me/bookings?page=1
+Authorization: Bearer {{passengerToken}}
+
+### Approve a booking
+POST {{baseUrl}}/v1/bookings/{{bookingId}}/approve
+Authorization: Bearer {{accessToken}}
+
+### Reject a booking
+POST {{baseUrl}}/v1/bookings/{{bookingId}}/reject
+Authorization: Bearer {{accessToken}}
+
+### Cancel a booking
+POST {{baseUrl}}/v1/bookings/{{bookingId}}/cancel
+Authorization: Bearer {{passengerToken}}
+
+### Create a review
+POST {{baseUrl}}/v1/trips/{{tripId}}/reviews
+Authorization: Bearer {{passengerToken}}
+Content-Type: application/json
+
+{
+  "to_user_id": "{{userId}}",
+  "rating": 5,
+  "comment": "on time"
+}
+
+### List reviews of a user
+GET {{baseUrl}}/v1/users/{{userId}}/reviews?page=1
+Authorization: Bearer {{accessToken}}
+
+### Block a user
+POST {{baseUrl}}/v1/users/{{otherUserId}}/block
+Authorization: Bearer {{accessToken}}
+
+### Unblock a user
+DELETE {{baseUrl}}/v1/users/{{otherUserId}}/block
+Authorization: Bearer {{accessToken}}
+
+### List users I blocked
+GET {{baseUrl}}/v1/me/blocks?page=1
+Authorization: Bearer {{accessToken}}
+
+### Report a user
+POST {{baseUrl}}/v1/reports
+Authorization: Bearer {{passengerToken}}
+Content-Type: application/json
+
+{
+  "reported_user_id": "{{otherUserId}}",
+  "trip_id": "{{tripId}}",
+  "reason": "no_show",
+  "details": "did not arrive"
+}
+
+### List my notifications
+GET {{baseUrl}}/v1/me/notifications?limit=20
+Authorization: Bearer {{accessToken}}
+
+### Mark notifications read
+POST {{baseUrl}}/v1/me/notifications/read
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "ids": ["{{notificationId}}"]
+}
+
+### Claim pending SMS messages
+GET {{baseUrl}}/gateway/v1/pending?limit=10
+Authorization: Bearer {{gatewayKey}}
+
+### Report an SMS result
+POST {{baseUrl}}/gateway/v1/report
+Authorization: Bearer {{gatewayKey}}
+Content-Type: application/json
+
+{
+  "id": "{{smsId}}",
+  "status": "sent"
+}
+
+### Gateway heartbeat
+POST {{baseUrl}}/gateway/v1/heartbeat
+Authorization: Bearer {{gatewayKey}}
+
+### Register an SMS gateway
+POST {{baseUrl}}/admin/v1/gateways
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "android-phone-1",
+  "operator_prefixes": ["65"]
+}
+
+### List SMS gateways
+GET {{baseUrl}}/admin/v1/gateways
+Authorization: Bearer {{adminToken}}
+
+### SMS queue stats
+GET {{baseUrl}}/admin/v1/sms/stats
+Authorization: Bearer {{adminToken}}
+
+### List reports
+GET {{baseUrl}}/admin/v1/reports?status=open&page=1
+Authorization: Bearer {{adminToken}}
+
+### Update a report
+PATCH {{baseUrl}}/admin/v1/reports/{{reportId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "status": "resolved"
+}
+
+### Block a user as admin
+POST {{baseUrl}}/admin/v1/users/{{userId}}/block
+Authorization: Bearer {{adminToken}}
+
+### Unblock a user as admin
+DELETE {{baseUrl}}/admin/v1/users/{{userId}}/block
+Authorization: Bearer {{adminToken}}
+
+### Activate or deactivate a location
+PATCH {{baseUrl}}/admin/v1/locations/{{locationId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "is_active": false
+}

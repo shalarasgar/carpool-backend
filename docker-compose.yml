@@ -33,9 +33,22 @@ services:
       PHOTO_MAX_BYTES: "2097152"
       PHOTO_ALLOWED_TYPES: image/jpeg,image/png,image/webp
       MAX_VEHICLES_PER_USER: "3"
+    volumes:
+      - photos:/data/photos
     depends_on:
       postgres:
         condition: service_healthy
+      photos-init:
+        condition: service_completed_successfully
+
+  # Named volumes start root-owned. The API runs as uid 65532.
+  photos-init:
+    image: alpine:3.20
+    command: ["chown", "-R", "65532:65532", "/data/photos"]
+    volumes:
+      - photos:/data/photos
+    restart: "no"
 
 volumes:
   pgdata:
+  photos:

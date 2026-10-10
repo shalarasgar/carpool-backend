@@ -197,7 +197,7 @@ func (e *env) call(method, path string, body any, headers map[string]string) res
 	}
 	res, err := e.srv.Client().Do(req)
 	require.NoError(e.t, err)
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(res.Body)
 	require.NoError(e.t, err)
 

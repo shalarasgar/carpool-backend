@@ -78,7 +78,7 @@ func (h Users) Photo(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteCodeDetails(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", map[string]string{"photo": "required"})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, h.MaxPhoto+1))
 	if err != nil {
 		httperr.WriteCode(w, r, http.StatusBadRequest, "BAD_REQUEST")

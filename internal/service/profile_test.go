@@ -129,6 +129,8 @@ func TestNormalizePhoto(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "image/png", ct)
 	require.Equal(t, "png", ext)
+	_, err = png.Decode(bytes.NewReader(out))
+	require.NoError(t, err)
 
 	_, _, _, err = NormalizePhoto([]byte("this is plain text, not an image"), allowed, 1<<20)
 	require.ErrorIs(t, err, ErrPhotoType)

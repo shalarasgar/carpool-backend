@@ -1,0 +1,22 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+# The default set is the small one: errcheck, govet, ineffassign, staticcheck, unused.
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    generated: strict
+    paths:
+      - internal/store
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

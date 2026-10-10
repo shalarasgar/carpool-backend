@@ -9,7 +9,7 @@ import (
 	"log/slog"
 )
 
-// Kind is a stable event name the future inbox will store.
+// Kind is a stable inbox event name.
 type Kind string
 
 const (
@@ -19,6 +19,17 @@ const (
 	KindBookingCancelled Kind = "booking_cancelled"
 	KindTripCancelled    Kind = "trip_cancelled"
 )
+
+// AllKinds lists every inbox event type the API exposes.
+func AllKinds() []Kind {
+	return []Kind{
+		KindBookingRequested,
+		KindBookingApproved,
+		KindBookingRejected,
+		KindBookingCancelled,
+		KindTripCancelled,
+	}
+}
 
 // Event is one notification for one recipient. IDs are user, trip and booking
 // UUIDs. Phone numbers are never included.

@@ -246,7 +246,70 @@ func (c Config) validate() error {
 	if c.MaxVehiclesPerUser < 1 || c.MaxVehiclesPerUser > 20 {
 		return fmt.Errorf("MAX_VEHICLES_PER_USER must be between 1 and 20")
 	}
+	if err := c.rejectWeakProductionSecrets(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// publishedSecretDefaults are the placeholder values shipped in .env.example
+// and docker-compose.yml. DEV_MODE=false refuses them so a production process
+// cannot boot on the examples.
+var publishedSecretDefaults = []string{
+	"replace-with-a-long-random-string",
+	"replace-with-a-different-long-random-string",
+	"replace-with-a-long-random-admin-token",
+	"dev-jwt-secret-change-me",
+	"dev-otp-hmac-secret-change",
+	"dev-admin-token-change",
+}
+
+func (c Config) rejectWeakProductionSecrets() error {
+	if c.DevMode {
+		return nil
+	}
+	secrets := []struct{ name, value string }{
+		{"JWT_SECRET", strings.TrimSpace(c.JWTSecret)},
+		{"OTP_HMAC_SECRET", strings.TrimSpace(c.OTPHMACSecret)},
+		{"ADMIN_TOKEN", strings.TrimSpace(c.AdminToken)},
+	}
+	seen := make(map[string]string, len(secrets))
+	for _, s := range secrets {
+		if isWeakSecret(s.value) {
+			return fmt.Errorf("refusing to start with DEV_MODE=false: %s is a default or weak value", s.name)
+		}
+		if prev, ok := seen[s.value]; ok {
+			return fmt.Errorf("refusing to start with DEV_MODE=false: %s must differ from %s", s.name, prev)
+		}
+		seen[s.value] = s.name
+	}
+	return nil
+}
+
+func isWeakSecret(value string) bool {
+	if value == "" || distinctRunes(value) < 8 {
+		return true
+	}
+	lower := strings.ToLower(value)
+	for _, known := range publishedSecretDefaults {
+		if lower == known {
+			return true
+		}
+	}
+	for _, needle := range []string{"replace-with", "change-me", "changeme", "change_me"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func distinctRunes(value string) int {
+	seen := make(map[rune]struct{})
+	for _, r := range value {
+		seen[r] = struct{}{}
+	}
+	return len(seen)
 }
 
 func validateDatabaseURL(raw string) error {

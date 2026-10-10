@@ -1,24 +1,28 @@
 openapi: 3.0.3
 info:
   title: Carpool API
-  version: 0.4.0
+  version: 1.0.0
   description: |
-    Backend for the Turkmenistan intercity carpool app.
+    Backend for the Turkmenistan intercity carpool app (phase 1).
 
-    Phase D adds trips, search and bookings. Approving a booking locks the
-    trip row and never oversells seats. Phone numbers appear only on a
-    booking, and only after it is approved. Phase C remains: profile,
-    vehicles, public profiles and the location directory. Phase B remains:
-    phone + OTP authentication, token refresh, and the SMS gateway contract.
+    Phone + OTP authentication, profiles, vehicles, the location directory,
+    trips and bookings, reviews, blocks, reports, the in-app notification
+    inbox, the Android SMS gateway, and the admin API.
+
+    Approving a booking locks the trip row and never oversells seats. Phone
+    numbers appear only on a booking, and only after it is approved. Trip
+    status includes `expired` (a past trip that has no approved booking).
 
     **Localization.** Send `Accept-Language: tk`, `ru` or `en`. Error
     messages are localized; the default is `tk`. The response carries
-    `Content-Language`.
+    `Content-Language`. Inbox `title` and `body` follow the recipient's
+    saved locale, not this header.
 
     **Error envelope.** Every error is
     `{"error":{"code":"STABLE_CODE","message":"<localized>","details":{...}}}`.
     `details` is present only for `VALIDATION_ERROR` and maps field name to
-    the failed rule (`required`, `len`, `numeric`, ...).
+    the failed rule (`required`, `len`, `numeric`, ...). `code` is one of
+    the values in the `Error` schema.
 
 servers:
   - url: http://localhost:8080
@@ -1592,6 +1596,8 @@ components:
                 - BOOKING_NOT_FOUND
                 - INVALID_STATE
                 - BOOKING_EXISTS
+                - REVIEW_EXISTS
+                - REVIEW_WINDOW_CLOSED
             message: { type: string, description: Localized per Accept-Language. }
             details:
               type: object

@@ -281,37 +281,11 @@ func sourceFromView(row store.GetTripViewRow) tripSource {
 }
 
 func sourceFromSearch(row store.SearchTripsRow) tripSource {
-	return sourceFromView(store.GetTripViewRow{
-		ID: row.ID, DriverID: row.DriverID, VehicleID: row.VehicleID,
-		FromLocationID: row.FromLocationID, ToLocationID: row.ToLocationID,
-		DepartsAt: row.DepartsAt, SeatsTotal: row.SeatsTotal, SeatsLeft: row.SeatsLeft,
-		SuggestedPrice: row.SuggestedPrice, Currency: row.Currency,
-		PickupNote: row.PickupNote, DropoffNote: row.DropoffNote, Note: row.Note,
-		Status: row.Status, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-		DriverName: row.DriverName, DriverPhotoUrl: row.DriverPhotoUrl,
-		DriverRatingAvg: row.DriverRatingAvg, DriverRatingCount: row.DriverRatingCount,
-		VehicleBrand: row.VehicleBrand, VehicleModel: row.VehicleModel,
-		VehicleColor: row.VehicleColor, VehiclePlate: row.VehiclePlate,
-		FromType: row.FromType, FromNameTk: row.FromNameTk, FromNameRu: row.FromNameRu, FromNameEn: row.FromNameEn,
-		ToType: row.ToType, ToNameTk: row.ToNameTk, ToNameRu: row.ToNameRu, ToNameEn: row.ToNameEn,
-	})
+	return sourceFromView(store.GetTripViewRow(row))
 }
 
 func sourceFromDriver(row store.ListDriverTripsRow) tripSource {
-	return sourceFromSearch(store.SearchTripsRow{
-		ID: row.ID, DriverID: row.DriverID, VehicleID: row.VehicleID,
-		FromLocationID: row.FromLocationID, ToLocationID: row.ToLocationID,
-		DepartsAt: row.DepartsAt, SeatsTotal: row.SeatsTotal, SeatsLeft: row.SeatsLeft,
-		SuggestedPrice: row.SuggestedPrice, Currency: row.Currency,
-		PickupNote: row.PickupNote, DropoffNote: row.DropoffNote, Note: row.Note,
-		Status: row.Status, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-		DriverName: row.DriverName, DriverPhotoUrl: row.DriverPhotoUrl,
-		DriverRatingAvg: row.DriverRatingAvg, DriverRatingCount: row.DriverRatingCount,
-		VehicleBrand: row.VehicleBrand, VehicleModel: row.VehicleModel,
-		VehicleColor: row.VehicleColor, VehiclePlate: row.VehiclePlate,
-		FromType: row.FromType, FromNameTk: row.FromNameTk, FromNameRu: row.FromNameRu, FromNameEn: row.FromNameEn,
-		ToType: row.ToType, ToNameTk: row.ToNameTk, ToNameRu: row.ToNameRu, ToNameEn: row.ToNameEn,
-	})
+	return sourceFromSearch(store.SearchTripsRow(row))
 }
 
 func tripFromPassengerBooking(row store.ListBookingsByPassengerRow, locale string) (Trip, error) {

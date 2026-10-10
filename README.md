@@ -1,12 +1,13 @@
 # Carpool backend
 
-Backend for the Turkmenistan intercity carpool API. Done so far:
+Backend for the Turkmenistan intercity carpool API. Phase 1 (spec phases A–F) is implemented:
 
 - Phase A: configuration, PostgreSQL, migrations, structured logging, health checks.
 - Phase B: phone + OTP authentication, JWT access tokens with rotating refresh tokens, the SMS queue drained by an Android gateway phone, gateway and admin endpoints, background maintenance, localized errors (tk/ru/en).
 - Phase C: the caller's profile and photo, vehicles, public profiles, and the location directory.
 - Phase D: trips, search, and bookings, including the seat lock that prevents overselling.
 - Phase E: reviews, user blocks, reports, the in-app notification inbox, and the rest of the admin API.
+- Phase F: OpenAPI kept in sync with the router, an `api.http` example for every route, production Compose, and a database backup script.
 
 Push notifications (FCM), chat, and payments are not implemented.
 
@@ -47,6 +48,8 @@ Run the API and Postgres together (the container applies migrations on startup):
 ```bash
 docker compose up --build
 ```
+
+The image runs as uid 65532 and stores photos on the `photos` volume. A production-shaped stack (`DEV_MODE=false`, no published database port) is in [Production](#production).
 
 ## Environment
 
@@ -104,11 +107,14 @@ docker compose up --build
 | `make migrate-up` | Apply all pending migrations with the CLI. |
 | `make migrate-down` | Roll back the latest migration. |
 | `make sqlc` | Regenerate `internal/store` from `db/queries`. |
-| `make lint` | `go vet ./...` |
+| `make lint` | `golangci-lint run ./...` (config in `.golangci.yml`; install the binary separately). |
+| `make openapi-check` | Fail if a route registered in the router is missing from `openapi.yaml`, or the spec lists a route the router does not serve. Also checks error codes, trip status `expired`, and notification types. |
+
+`api.http` has one example request per endpoint for the VS Code REST Client and the JetBrains HTTP Client. Set `@baseUrl`, `@accessToken`, `@adminToken`, and `@gatewayKey` at the top of the file.
 
 `make migrate-up` and `make migrate-down` read `DATABASE_URL` from the environment or `.env`.
 
-Integration tests (`internal/integration`) create a throwaway database per test on the server named by `TEST_DATABASE_URL`, apply the migrations, and drop it afterwards. The development database is never touched. They cover the full OTP login flow, refresh-token rotation and reuse detection, blocked users, attempt limits, rate limits, parallel `SKIP LOCKED` claiming, gateway retries, operator-prefix routing, the maintenance job, profile update and anonymized re-registration, photo upload, vehicle ownership, and location filtering with ETag.
+Integration tests (`internal/integration`) create a throwaway database per test on the server named by `TEST_DATABASE_URL`, apply the migrations, and drop it afterwards. The development database is never touched. They cover the full OTP login flow, refresh-token rotation and reuse detection, blocked users, attempt limits, rate limits, parallel `SKIP LOCKED` claiming, gateway retries, operator-prefix routing, the maintenance job, profile update and anonymized re-registration, photo upload, vehicle ownership, and location filtering with ETag. Later files cover trip search, booking approval under parallel load, reviews, blocks, reports, the inbox, and admin moderation.
 
 ## Authentication flow
 
@@ -139,6 +145,8 @@ Every error is `{"error":{"code":"...","message":"<localized>"}}`. `message` fol
 | 404 | `BOOKING_NOT_FOUND` | Unknown booking id |
 | 409 | `SEAT_UNAVAILABLE` | Not enough seats, or the trip is full |
 | 409 | `BOOKING_EXISTS` | This passenger already has a pending or approved booking on the trip |
+| 409 | `REVIEW_EXISTS` | This reviewer already reviewed that person on this trip |
+| 409 | `REVIEW_WINDOW_CLOSED` | `departs_at` is older than `REVIEW_WINDOW` |
 | 409 | `INVALID_STATE` | The trip or booking is not in a state that allows the action |
 | 404 | `SMS_NOT_FOUND` | Report for an id this gateway does not hold |
 | 409 | `GATEWAY_EXISTS` | Duplicate gateway name |
@@ -199,7 +207,7 @@ A past trip that has approved bookings but a `seats_left` that does not match th
 
 `GET /v1/me` and `PATCH /v1/me` use the caller's JWT. `PATCH` accepts `name` and/or `locale` (`tk`, `ru`, `en`). `GET /v1/users/{id}` is also authenticated, but the JSON is a public profile only: `name`, `photo_url`, `rating_avg`, `rating_count`, the newest `vehicle`, and `completed_trips`. There is no `phone` field. `completed_trips` is completed trips the user drove plus completed trips they rode with an approved booking.
 
-`POST /v1/me/photo` is `multipart/form-data` with a part named `photo`. The part's `Content-Type` is ignored. The server sniffs the bytes (`jpeg`, `png`, `webp`), rejects anything else, and re-encodes the image so EXIF and other metadata are dropped. WebP is stored as JPEG, or as PNG when the picture has transparency. Files are random 32-hex names under `PHOTO_DIR` and are served at `GET /v1/media/photos/{name}` with no directory listing. `photo_url` in JSON is that path (`/v1/media/photos/...`), not an absolute URL. The storage type is an interface with a local-disk implementation so an S3 backend can replace it later. In the container image the directory is `/data/photos` and is not a volume, so photos disappear when the container filesystem is recreated unless you mount a directory writable by uid 65532.
+`POST /v1/me/photo` is `multipart/form-data` with a part named `photo`. The part's `Content-Type` is ignored. The server sniffs the bytes (`jpeg`, `png`, `webp`), rejects anything else, and re-encodes the image so EXIF and other metadata are dropped. WebP is stored as JPEG, or as PNG when the picture has transparency. Files are random 32-hex names under `PHOTO_DIR` and are served at `GET /v1/media/photos/{name}` with no directory listing. `photo_url` in JSON is that path (`/v1/media/photos/...`), not an absolute URL. The storage type is an interface with a local-disk implementation so an S3 backend can replace it later. In the container image the directory is `/data/photos`. Compose mounts the `photos` volume there. The process runs as uid 65532, and `photos-init` chowns that volume before the API starts. A host bind mount has to be writable by uid 65532.
 
 `DELETE /v1/me` anonymizes the account in one transaction. It cancels the user's `active` and `full` trips and the pending or approved bookings on them (`cancelled_by_driver`), cancels the user's own pending or approved bookings on other people's `active` or `full` trips (`cancelled_by_passenger`, restoring seats and re-opening a `full` trip), deletes their vehicles, clears the name and photo, and revokes every refresh token. `users.phone` becomes `anon:` + HMAC-SHA256 of the number (keyed with `OTP_HMAC_SECRET`) + the user id. The cleartext number is not kept. That frees the unique E.164 value, so the next OTP login with the same number creates a new user with an empty profile (`is_new_user: true`). The old row stays, with its ratings, so history is not rewritten onto the new account. Completed, cancelled and expired trips are not rewritten. If restoring seats would push `seats_left` above `seats_total`, the booking is still cancelled and the trip's seat counters are left unchanged. The previous access token then gets `401`.
 
@@ -225,7 +233,7 @@ All of these routes require a JWT. Trip JSON never contains a phone number. A bo
 
 Those decisions insert an inbox row in the same transaction: `booking_requested`, `booking_approved`, `booking_rejected`, `booking_cancelled`, and `trip_cancelled` (one event per passenger when a trip is cancelled, not a second booking event). If the insert fails, the booking or trip change rolls back with it. Account deletion and an admin block do the same for the events they emit. The stored row is the event type plus `actor_id`, `trip_id`, and `booking_id`. Phone numbers are not stored. `title` and `body` are chosen from the recipient's saved `locale` when the inbox is read, not from `Accept-Language`.
 
-Mutating requests lock the acting user before the trip, and the trip before the booking, which is the same order account deletion uses.
+**Lock order** is user, then trip, then booking. Mutating requests lock the acting user before the trip, and the trip before the booking. Account deletion uses that same order. A review locks the reviewed user and, when the reviewer row is locked too, locks the two user rows in id order before the trip and the booking, so two mutual reviews do not deadlock.
 
 ## Reviews, blocks, reports, and the inbox
 
@@ -397,6 +405,62 @@ curl -s -i -X DELETE $BASE/v1/me -H "Authorization: Bearer $TOKEN"
 
 A panic returns `500 INTERNAL`. Unknown paths return `404 NOT_FOUND`. Every response includes `X-Request-ID`. Stop the server with Ctrl-C: it drains open requests, stops the maintenance loop, then closes the database pool.
 
+## Production
+
+The API image is multi-stage and ends on `gcr.io/distroless/static-debian12:nonroot` (uid 65532). It has no shell. `docker-compose.yml` is the local stack (`DEV_MODE=true`, Postgres published on `5432`, the example secrets). `docker-compose.prod.yml` is the production-shaped example:
+
+- `DEV_MODE=false`. Startup refuses the placeholder secrets from `.env.example` and `docker-compose.yml`, any secret containing `replace-with` or `change-me`, a secret with fewer than 8 distinct characters, and a process where `JWT_SECRET`, `OTP_HMAC_SECRET`, and `ADMIN_TOKEN` are not all different. `DEV_MODE=true` still accepts the local examples.
+- Postgres is not published on the host. Set `POSTGRES_PASSWORD` to something other than the local `carpool` password.
+- Profile photos live on the `photos` volume at `/data/photos`. `photos-init` runs `chown -R 65532:65532` on that volume, then exits, so the non-root process can write it.
+- `TRUST_PROXY_HEADERS` defaults to `false`. Turn it on only behind a reverse proxy that discards the incoming `X-Forwarded-For` and `X-Real-IP` and sets them from the connecting client. When the flag is true, the per-IP OTP limit uses that address. A client who can supply the header can rotate it and avoid the limit.
+
+```bash
+POSTGRES_PASSWORD='long-random-db-password' \
+JWT_SECRET='long-random-jwt-secret-value' \
+OTP_HMAC_SECRET='long-random-otp-hmac-value' \
+ADMIN_TOKEN='long-random-admin-token-value' \
+  docker compose -f docker-compose.prod.yml up --build -d
+```
+
+Compose also reads a project `.env` for interpolation. If that file still has the example secrets, pass `--env-file` pointing at a file that does not. Inside the Compose network the API talks to Postgres with `sslmode=disable`. Use TLS when Postgres is not on that private network.
+
+## Backup and restore
+
+`scripts/backup-db.sh` writes a custom-format `pg_dump` (`-Fc`, no owners, no ACLs) to `backups/carpool-<UTC timestamp>.dump` with mode `0600`. The dump contains phone numbers. The script takes a directory lock so a second nightly run exits 0 instead of writing a second file, and it deletes dumps older than `BACKUP_RETENTION_DAYS` (default 14). `pg_dump` uses a snapshot, so it can run while the API is serving.
+
+```bash
+# Host client. DATABASE_URL comes from the environment or .env.
+./scripts/backup-db.sh
+
+# Client inside the Compose Postgres 16 image, so the versions match.
+./scripts/backup-db.sh --docker
+# COMPOSE_FILE=docker-compose.prod.yml ./scripts/backup-db.sh --docker
+```
+
+A nightly cron entry, from the repo root:
+
+```bash
+0 3 * * * cd /opt/carpool && ./scripts/backup-db.sh --docker >> /var/log/carpool-backup.log 2>&1
+```
+
+Stop the API before restoring. `scripts/restore-db.sh` requires `--yes` and replaces objects in the target database (`pg_restore --clean --if-exists --single-transaction`):
+
+```bash
+./scripts/restore-db.sh backups/carpool-20261010T030000Z.dump --yes
+./scripts/restore-db.sh --docker backups/carpool-20261010T030000Z.dump --yes
+```
+
+The script does not print `DATABASE_URL`. After a restore, start the API again. `MIGRATE_ON_START` applies any migration newer than the dump.
+
+## Phase 2
+
+Not implemented. The schema already has the seams:
+
+- **Etraps.** `locations.type` includes `etrap`, and search already expands a welayat to its active descendants. Add the official list in `migrations/000003_seed_etraps.up.sql` and mark the rows `is_active`. Do not invent etrap names. Trips between those rows then work without a code change.
+- **`trip_stops`.** The table exists and Phase 1 does not read or write it. Phase 2 can attach intermediate stops to a trip and include them in search.
+- **FCM.** `device_tokens` exists and nothing writes it. `notify.Notifier` is the delivery seam; Phase 1's implementation only inserts the in-app inbox, which the Flutter app polls. An FCM sender can sit beside that insert later. SMS fallback for notifications is the same seam.
+- **Ratings.** `rating_avg` is one average over every review of the user. A later change can split driver and passenger ratings without changing the review request shape until the client needs it.
+
 ## Assumptions
 
 Phase A:
@@ -408,7 +472,7 @@ Phase A:
 - Active phone numbers stored in the database must match `+993` followed by 8 digits. Anonymized accounts store a tombstone instead; see Phase C.
 - A user cannot block or review themselves. Those checks are database constraints.
 - Startup fails when the database ping fails, so a misconfigured `DATABASE_URL` is visible immediately.
-- `make lint` runs `go vet`. Install `golangci-lint` separately if you want a stricter lint later.
+- `make lint` runs `golangci-lint` with `.golangci.yml`. Generated sqlc code under `internal/store` is excluded. `go vet` is one of the enabled linters.
 
 Phase B:
 
@@ -431,7 +495,7 @@ Phase C:
 - Another user's vehicle id returns `404`, not `403`, so the API does not reveal which ids exist.
 - Images wider or taller than 2048 px are rejected. Clients should resize before upload.
 - Location search runs in the service after one ordered read of the `locations` table. That keeps Turkmen and Russian case-folding working on any database locale. The table is welayats, cities and, later, etraps.
-- Profile photos in Docker live at `/data/photos` inside the image. Mount a volume there only if it is writable by uid 65532; a root-owned named volume is not.
+- Profile photos in Docker live on the `photos` volume mounted at `/data/photos`. `photos-init` chowns the volume to uid 65532 before the API, which has no shell, starts. A bind mount still has to be writable by that uid.
 
 Phase D:
 
@@ -461,3 +525,11 @@ Phase E:
 - The maintenance job turns pending bookings on trips that have already departed into `cancelled_by_driver` and inserts `booking_cancelled` in the same statement. It does not use `rejected`.
 - Read notifications older than 30 days are deleted. Unread notifications are kept.
 - `POST /v1/users/{id}/block` returns `201` or `200`. `DELETE` returns `204` even when there was nothing to delete.
+
+Phase F:
+
+- `DEV_MODE=false` refuses the secrets published in `.env.example` and `docker-compose.yml`, secrets that contain `replace-with` or `change-me`, secrets with fewer than 8 distinct characters, and a process where `JWT_SECRET`, `OTP_HMAC_SECRET`, and `ADMIN_TOKEN` are not all different. The error text does not include the secret. `DEV_MODE=true` still accepts the local examples, which is what `docker-compose.yml` uses.
+- The database password in `docker-compose.yml` stays `carpool` for local use. `docker-compose.prod.yml` requires `POSTGRES_PASSWORD` and does not publish `5432`.
+- `make openapi-check` compares chi routes with `openapi.yaml`. It does not start a server. The same checks run as part of `go test ./...`.
+- Backups are logical `pg_dump -Fc` files, safe to take while the API is running. Restore is manual, requires `--yes`, and expects the API to be stopped.
+- `TRUST_PROXY_HEADERS` stays false unless a reverse proxy overwrites the forwarding headers. The per-IP OTP limit is the only caller.

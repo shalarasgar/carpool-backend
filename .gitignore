@@ -16,6 +16,9 @@ coverage.*
 /uploads/
 /data/
 
+# Logical dumps from scripts/backup-db.sh
+/backups/
+
 # IDE / OS
 .idea/
 .vscode/

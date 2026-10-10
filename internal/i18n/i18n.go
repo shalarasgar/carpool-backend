@@ -4,6 +4,7 @@ package i18n
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -80,6 +81,16 @@ func FromContext(ctx context.Context) string {
 		return locale
 	}
 	return DefaultLocale
+}
+
+// ErrorCodes returns the stable machine-readable error codes, sorted.
+func ErrorCodes() []string {
+	codes := make([]string, 0, len(messages))
+	for code := range messages {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return codes
 }
 
 // Message returns the localized text for an error code. Unknown codes fall

@@ -1,4 +1,6 @@
-.PHONY: run build test test-integration migrate-up migrate-down sqlc lint
+.PHONY: run build test test-integration migrate-up migrate-down sqlc lint openapi-check
+
+GOLANGCI ?= golangci-lint
 
 SQLC ?= sqlc
 MIGRATE ?= migrate
@@ -31,4 +33,7 @@ sqlc:
 	$(SQLC) generate
 
 lint:
-	go vet ./...
+	$(GOLANGCI) run ./...
+
+openapi-check:
+	go test ./internal/http -run TestOpenAPI -count=1

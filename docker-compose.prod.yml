@@ -1,0 +1,71 @@
+# Production-shaped Compose file.
+# The API image runs as uid 65532 (distroless nonroot). photos-init chowns the
+# upload volume to that user before the API starts. DEV_MODE is false, so the
+# process refuses the example secrets from .env.example and docker-compose.yml.
+#
+# TRUST_PROXY_HEADERS defaults to false. Set it to true only when a reverse
+# proxy in front of this service overwrites X-Forwarded-For and X-Real-IP
+# with the connecting client. If the process trusts those headers as the
+# client sent them, the per-IP OTP limit can be bypassed by forging the address.
+#
+#   POSTGRES_PASSWORD='...' JWT_SECRET='...' OTP_HMAC_SECRET='...' ADMIN_TOKEN='...' \
+#     docker compose -f docker-compose.prod.yml up --build -d
+#
+# Compose also interpolates a project .env. Do not reuse the local dev secrets.
+# Pass --env-file .env.prod when that file holds the production values.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: carpool
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: carpool
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carpool -d carpool"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  photos-init:
+    image: alpine:3.20
+    command: ["chown", "-R", "65532:65532", "/data/photos"]
+    volumes:
+      - photos:/data/photos
+    restart: "no"
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      APP_NAME: carpool
+      PORT: "8080"
+      DEV_MODE: "false"
+      DATABASE_URL: postgres://carpool:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/carpool?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?set OTP_HMAC_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN}
+      MIGRATE_ON_START: "true"
+      SMS_PROVIDER: queue
+      PHOTO_DIR: /data/photos
+      PHOTO_MAX_BYTES: "2097152"
+      PHOTO_ALLOWED_TYPES: image/jpeg,image/png,image/webp
+      MAX_VEHICLES_PER_USER: "3"
+      # false unless a proxy overwrites X-Forwarded-For. See the file header.
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+    volumes:
+      - photos:/data/photos
+    depends_on:
+      postgres:
+        condition: service_healthy
+      photos-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  photos:

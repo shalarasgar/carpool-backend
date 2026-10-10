@@ -28,7 +28,7 @@ func (h Media) Photo(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteCode(w, r, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", photoContentType(name))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "public, max-age=86400")

@@ -411,7 +411,7 @@ func (e *env) do(method, path string, body any, headers map[string]string) (int,
 	if err != nil {
 		return 0, nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(res.Body)
 	return res.StatusCode, raw, err
 }

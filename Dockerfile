@@ -15,5 +15,7 @@ COPY --from=build /out/api /api
 COPY --from=layout --chown=nonroot:nonroot /data/photos /data/photos
 ENV PHOTO_DIR=/data/photos
 EXPOSE 8080
+# nonroot is uid 65532. Compose mounts a volume on /data/photos and chowns it
+# to this user before the process starts.
 USER nonroot:nonroot
 ENTRYPOINT ["/api"]

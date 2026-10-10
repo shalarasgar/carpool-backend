@@ -45,6 +45,64 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsPublishedSecretsWhenProd(t *testing.T) {
+	published := []string{
+		"replace-with-a-long-random-string",
+		"dev-jwt-secret-change-me",
+		"DEV-ADMIN-TOKEN-CHANGE",
+	}
+	for _, secret := range published {
+		t.Run(secret, func(t *testing.T) {
+			setConfigEnv(t)
+			t.Setenv("JWT_SECRET", secret)
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() error = nil, want a weak-secret error")
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
+				t.Fatalf("error includes the secret: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsLowDiversitySecretWhenProd(t *testing.T) {
+	setConfigEnv(t)
+	t.Setenv("OTP_HMAC_SECRET", "aaaaaaaaaaaaaaaa")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want a weak-secret error")
+	}
+}
+
+func TestLoadRejectsIdenticalSecretsWhenProd(t *testing.T) {
+	setConfigEnv(t)
+	const shared = "abcdefghijklmnop-shared-value"
+	t.Setenv("JWT_SECRET", shared)
+	t.Setenv("ADMIN_TOKEN", shared)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want distinct-secret error")
+	}
+	if strings.Contains(err.Error(), shared) {
+		t.Fatalf("error includes the secret: %v", err)
+	}
+}
+
+func TestLoadAllowsPublishedSecretsInDevMode(t *testing.T) {
+	setConfigEnv(t)
+	t.Setenv("DEV_MODE", "true")
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-change-me")
+	t.Setenv("OTP_HMAC_SECRET", "dev-otp-hmac-secret-change")
+	t.Setenv("ADMIN_TOKEN", "dev-admin-token-change")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
 func TestLoadRejectsShortSecret(t *testing.T) {
 	setConfigEnv(t)
 	t.Setenv("JWT_SECRET", "too-short")

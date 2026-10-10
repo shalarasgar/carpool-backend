@@ -48,6 +48,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	fbApp, err := config.InitFirebase(ctx)
+	if err != nil {
+		return err
+	}
+	messagingClient, err := fbApp.Messaging(ctx)
+	if err != nil {
+		return fmt.Errorf("init fcm client: %w", err)
+	}
+	if messagingClient == nil {
+		return fmt.Errorf("init fcm client: empty client")
+	}
+	logger.Info("firebase messaging ready")
+
 	if cfg.MigrateOnStart {
 		logger.Info("applying migrations")
 		if err := appmigrate.Up(cfg.DatabaseURL); err != nil {

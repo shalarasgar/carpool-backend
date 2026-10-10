@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +150,26 @@ func TestConfigLogValueOmitsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(out, `"app_name":"carpool"`) {
 		t.Fatalf("log missing app name: %s", out)
+	}
+}
+
+func TestInitFirebaseMissingCredentials(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = InitFirebase(context.Background())
+	if err == nil {
+		t.Fatal("InitFirebase() error = nil, want missing credentials")
 	}
 }
 

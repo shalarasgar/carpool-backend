@@ -3,6 +3,7 @@
 .env.local
 *.pem
 *.key
+service-account.json
 
 # Go
 /bin/

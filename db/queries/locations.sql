@@ -1,3 +1,8 @@
+-- name: GetLocationByID :one
+SELECT id, parent_id, type, name_tk, name_ru, name_en, is_active, sort_order
+FROM locations
+WHERE id = $1;
+
 -- name: ListLocations :many
 SELECT id, parent_id, type, name_tk, name_ru, name_en, is_active, sort_order
 FROM locations

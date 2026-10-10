@@ -5,6 +5,7 @@ sql:
     schema:
       - migrations/000001_init_schema.up.sql
       - migrations/000004_users_anonymize.up.sql
+      - migrations/000005_trip_status_expired.up.sql
     gen:
       go:
         package: store

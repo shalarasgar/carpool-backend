@@ -1,5 +1,6 @@
-// Package jobs runs periodic maintenance: returning stuck SMS to the queue
-// and deleting expired OTP codes and refresh tokens.
+// Package jobs runs periodic maintenance: returning stuck SMS to the queue,
+// deleting expired OTP codes and refresh tokens, and closing trips whose
+// departure time has passed.
 package jobs
 
 import (
@@ -72,10 +73,13 @@ func (r *Runner) Run(ctx context.Context) {
 
 // Stats counts what one run changed.
 type Stats struct {
-	RequeuedSMS    int64
-	UnassignedSMS  int64
-	DeletedOTPs    int64
-	DeletedRefresh int64
+	RequeuedSMS       int64
+	UnassignedSMS     int64
+	DeletedOTPs       int64
+	DeletedRefresh    int64
+	CompletedTrips    int64
+	ExpiredTrips      int64
+	InconsistentTrips int64
 }
 
 // RunOnce executes every maintenance query once. Each query is independent;
@@ -100,6 +104,25 @@ func (r *Runner) RunOnce(ctx context.Context) (Stats, error) {
 	if s.DeletedRefresh, err = r.q.DeleteExpiredRefreshTokens(ctx, revokedBefore); err != nil {
 		return s, fmt.Errorf("delete expired refresh tokens: %w", err)
 	}
+	// Past active/full trips with a consistent approved-seat total become
+	// completed. Past active/full trips with no approved booking become
+	// expired. Booking rows are not modified. A past trip that has approved
+	// bookings but whose seats_left does not equal seats_total minus those
+	// seats is left unchanged and counted here.
+	if s.CompletedTrips, err = r.q.CompleteConsistentPastTrips(ctx); err != nil {
+		return s, fmt.Errorf("complete past trips: %w", err)
+	}
+	if s.ExpiredTrips, err = r.q.ExpirePastTripsWithoutApproval(ctx); err != nil {
+		return s, fmt.Errorf("expire past trips: %w", err)
+	}
+	inconsistent, err := r.q.CountInconsistentPastTrips(ctx)
+	if err != nil {
+		return s, fmt.Errorf("count inconsistent trips: %w", err)
+	}
+	s.InconsistentTrips = int64(inconsistent)
+	if inconsistent > 0 {
+		r.logger.Warn("past trips left unchanged because approved seats do not match seats_left", "trips", inconsistent)
+	}
 	return s, nil
 }
 
@@ -119,6 +142,9 @@ func (r *Runner) runLogged(ctx context.Context) {
 			"unassigned_sms", stats.UnassignedSMS,
 			"deleted_otps", stats.DeletedOTPs,
 			"deleted_refresh_tokens", stats.DeletedRefresh,
+			"completed_trips", stats.CompletedTrips,
+			"expired_trips", stats.ExpiredTrips,
+			"inconsistent_trips", stats.InconsistentTrips,
 		)
 	}
 }

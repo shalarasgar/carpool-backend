@@ -218,4 +218,29 @@ var messages = map[string]map[string]string{
 		LocaleRU: "Достигнут предел числа автомобилей.",
 		LocaleEN: "You have reached the vehicle limit.",
 	},
+	"SEAT_UNAVAILABLE": {
+		LocaleTK: "Boş ýer ýok.",
+		LocaleRU: "Нет свободных мест.",
+		LocaleEN: "No seats left.",
+	},
+	"TRIP_NOT_FOUND": {
+		LocaleTK: "Syýahat tapylmady.",
+		LocaleRU: "Поездка не найдена.",
+		LocaleEN: "Trip not found.",
+	},
+	"BOOKING_NOT_FOUND": {
+		LocaleTK: "Bron tapylmady.",
+		LocaleRU: "Бронирование не найдено.",
+		LocaleEN: "Booking not found.",
+	},
+	"INVALID_STATE": {
+		LocaleTK: "Bu hereket häzirki ýagdaýda mümkin däl.",
+		LocaleRU: "Это действие сейчас недоступно.",
+		LocaleEN: "This action is not allowed in the current state.",
+	},
+	"BOOKING_EXISTS": {
+		LocaleTK: "Bu syýahata eýýäm işjeň bron bar.",
+		LocaleRU: "У вас уже есть активная бронь на эту поездку.",
+		LocaleEN: "You already have an active booking on this trip.",
+	},
 }

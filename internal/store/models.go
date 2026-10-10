@@ -150,6 +150,7 @@ const (
 	TripStatusFull      TripStatus = "full"
 	TripStatusCancelled TripStatus = "cancelled"
 	TripStatusCompleted TripStatus = "completed"
+	TripStatusExpired   TripStatus = "expired"
 )
 
 func (e *TripStatus) Scan(src interface{}) error {

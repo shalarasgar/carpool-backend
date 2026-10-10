@@ -29,6 +29,9 @@ RETURNING id, user_id, brand, model, color, plate, created_at;
 DELETE FROM vehicles
 WHERE id = $1 AND user_id = $2;
 
+-- name: DeleteVehiclesByUser :exec
+DELETE FROM vehicles WHERE user_id = $1;
+
 -- name: GetLatestVehicleByUser :one
 SELECT id, user_id, brand, model, color, plate, created_at
 FROM vehicles

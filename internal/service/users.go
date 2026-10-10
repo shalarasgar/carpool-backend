@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shalarasgar/carpool-backend/internal/notify"
 	"github.com/shalarasgar/carpool-backend/internal/storage"
 	"github.com/shalarasgar/carpool-backend/internal/store"
 )
@@ -43,12 +44,13 @@ type ProfileUpdate struct {
 
 // Users implements the caller's profile and public profiles.
 type Users struct {
-	pool    *pgxpool.Pool
-	q       *store.Queries
-	photos  storage.Store
-	cfg     UserConfig
-	allowed map[string]struct{}
-	logger  *slog.Logger
+	pool     *pgxpool.Pool
+	q        *store.Queries
+	photos   storage.Store
+	cfg      UserConfig
+	allowed  map[string]struct{}
+	notifier notify.Notifier
+	logger   *slog.Logger
 }
 
 // NewUsers wires the profile service. photos may not be nil.
@@ -60,7 +62,10 @@ func NewUsers(pool *pgxpool.Pool, photos storage.Store, cfg UserConfig, logger *
 	for _, kind := range cfg.AllowedTypes {
 		allowed[kind] = struct{}{}
 	}
-	return &Users{pool: pool, q: store.New(pool), photos: photos, cfg: cfg, allowed: allowed, logger: logger}
+	return &Users{
+		pool: pool, q: store.New(pool), photos: photos, cfg: cfg, allowed: allowed,
+		notifier: notify.Nop{Logger: logger}, logger: logger,
+	}
 }
 
 // Get returns the caller's own profile, including their phone.
@@ -155,12 +160,16 @@ func (s *Users) SetPhoto(ctx context.Context, userID string, data []byte) (User,
 
 // Anonymize clears the profile, revokes every refresh token and replaces the
 // phone with a one-way tombstone so the same number can register a new user.
+// In the same transaction it cancels the user's active trips and the bookings
+// on them, cancels their pending and approved bookings as a passenger
+// (restoring seats on active or full trips), and deletes their vehicles.
 func (s *Users) Anonymize(ctx context.Context, userID string) error {
 	uid, err := parseUserID(userID)
 	if err != nil {
 		return err
 	}
 	var oldPhoto string
+	var events []notify.Event
 	err = store.RunInTx(ctx, s.pool, func(q *store.Queries) error {
 		user, err := q.GetUserByIDForUpdate(ctx, uid)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -174,6 +183,10 @@ func (s *Users) Anonymize(ctx context.Context, userID string) error {
 		}
 		if user.IsBlocked {
 			return ErrUserBlocked
+		}
+		events, err = ReleaseUserActivity(ctx, q, uid)
+		if err != nil {
+			return err
 		}
 		n, err := q.AnonymizeUser(ctx, store.AnonymizeUserParams{
 			ID:    uid,
@@ -197,6 +210,11 @@ func (s *Users) Anonymize(ctx context.Context, userID string) error {
 		return err
 	}
 	s.deleteStoredPhoto(ctx, userID, oldPhoto)
+	if s.notifier != nil && len(events) > 0 {
+		if err := s.notifier.Notify(ctx, events...); err != nil {
+			s.logger.Error("notify failed", "user_id", userID, "err", err)
+		}
+	}
 	s.logger.Info("user anonymized", "user_id", userID)
 	return nil
 }

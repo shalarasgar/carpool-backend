@@ -77,6 +77,15 @@ func (q *Queries) DeleteVehicle(ctx context.Context, arg DeleteVehicleParams) (i
 	return result.RowsAffected(), nil
 }
 
+const deleteVehiclesByUser = `-- name: DeleteVehiclesByUser :exec
+DELETE FROM vehicles WHERE user_id = $1
+`
+
+func (q *Queries) DeleteVehiclesByUser(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteVehiclesByUser, userID)
+	return err
+}
+
 const getLatestVehicleByUser = `-- name: GetLatestVehicleByUser :one
 SELECT id, user_id, brand, model, color, plate, created_at
 FROM vehicles

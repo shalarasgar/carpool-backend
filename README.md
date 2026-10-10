@@ -5,8 +5,9 @@ Backend for the Turkmenistan intercity carpool API. Done so far:
 - Phase A: configuration, PostgreSQL, migrations, structured logging, health checks.
 - Phase B: phone + OTP authentication, JWT access tokens with rotating refresh tokens, the SMS queue drained by an Android gateway phone, gateway and admin endpoints, background maintenance, localized errors (tk/ru/en).
 - Phase C: the caller's profile and photo, vehicles, public profiles, and the location directory.
+- Phase D: trips, search, and bookings, including the seat lock that prevents overselling.
 
-Trips, bookings, reviews and the rest of the core API are not implemented yet.
+Reviews, blocks, reports, the notification inbox and the rest of the admin API are not implemented yet. Booking and trip events are handed to a no-op notifier until that inbox exists.
 
 ## Prerequisites
 
@@ -128,8 +129,13 @@ Every error is `{"error":{"code":"...","message":"<localized>"}}`. `message` fol
 | 401 | `REFRESH_TOKEN_INVALID` / `REFRESH_TOKEN_EXPIRED` | Refresh failures |
 | 401 | `UNAUTHORIZED` | Missing or invalid bearer token / gateway key |
 | 403 | `USER_BLOCKED` | Blocked account |
-| 403 | `FORBIDDEN` | Wrong admin token |
+| 403 | `FORBIDDEN` | Wrong admin token, booking your own trip, a blocked pair, or a trip/booking action that is not yours |
 | 404 | `NOT_FOUND` | Unknown user, vehicle, or photo. Another user's vehicle is also `404` |
+| 404 | `TRIP_NOT_FOUND` | Unknown trip id, or a trip hidden because of a block |
+| 404 | `BOOKING_NOT_FOUND` | Unknown booking id |
+| 409 | `SEAT_UNAVAILABLE` | Not enough seats, or the trip is full |
+| 409 | `BOOKING_EXISTS` | This passenger already has a pending or approved booking on the trip |
+| 409 | `INVALID_STATE` | The trip or booking is not in a state that allows the action |
 | 404 | `SMS_NOT_FOUND` | Report for an id this gateway does not hold |
 | 409 | `GATEWAY_EXISTS` | Duplicate gateway name |
 | 413 | `PAYLOAD_TOO_LARGE` | JSON body over 64 KiB |
@@ -177,7 +183,11 @@ Every `JOBS_INTERVAL` (and once at startup) the process:
 - returns `processing` messages whose `locked_until` passed to `pending`;
 - unassigns `pending` messages routed to gateways that stopped heartbeating or were deactivated;
 - deletes OTP codes expired for more than 1 hour;
-- deletes refresh tokens that expired, or were revoked more than 7 days ago.
+- deletes refresh tokens that expired, or were revoked more than 7 days ago;
+- marks past `active` and `full` trips `completed` when they have at least one approved booking and `seats_left` equals `seats_total` minus those seats;
+- marks past `active` and `full` trips `expired` when they have no approved booking.
+
+The job does not change booking rows. A past trip that has approved bookings but a `seats_left` that does not match those seats is left as it is, and the count is logged. Pending bookings on an expired trip stay pending; approving one later returns `INVALID_STATE`.
 
 ## Profiles, vehicles and locations
 
@@ -185,11 +195,31 @@ Every `JOBS_INTERVAL` (and once at startup) the process:
 
 `POST /v1/me/photo` is `multipart/form-data` with a part named `photo`. The part's `Content-Type` is ignored. The server sniffs the bytes (`jpeg`, `png`, `webp`), rejects anything else, and re-encodes the image so EXIF and other metadata are dropped. WebP is stored as JPEG, or as PNG when the picture has transparency. Files are random 32-hex names under `PHOTO_DIR` and are served at `GET /v1/media/photos/{name}` with no directory listing. `photo_url` in JSON is that path (`/v1/media/photos/...`), not an absolute URL. The storage type is an interface with a local-disk implementation so an S3 backend can replace it later. In the container image the directory is `/data/photos` and is not a volume, so photos disappear when the container filesystem is recreated unless you mount a directory writable by uid 65532.
 
-`DELETE /v1/me` anonymizes the account: name and photo are cleared, every refresh token is revoked, and `users.phone` becomes `anon:` + HMAC-SHA256 of the number (keyed with `OTP_HMAC_SECRET`) + the user id. The cleartext number is not kept. That frees the unique E.164 value, so the next OTP login with the same number creates a new user with an empty profile (`is_new_user: true`). The old row stays, with its ratings, so history is not rewritten onto the new account. The previous access token then gets `401`.
+`DELETE /v1/me` anonymizes the account in one transaction. It cancels the user's `active` and `full` trips and the pending or approved bookings on them (`cancelled_by_driver`), cancels the user's own pending or approved bookings on other people's `active` or `full` trips (`cancelled_by_passenger`, restoring seats and re-opening a `full` trip), deletes their vehicles, clears the name and photo, and revokes every refresh token. `users.phone` becomes `anon:` + HMAC-SHA256 of the number (keyed with `OTP_HMAC_SECRET`) + the user id. The cleartext number is not kept. That frees the unique E.164 value, so the next OTP login with the same number creates a new user with an empty profile (`is_new_user: true`). The old row stays, with its ratings, so history is not rewritten onto the new account. Completed, cancelled and expired trips are not rewritten. If restoring seats would push `seats_left` above `seats_total`, the booking is still cancelled and the trip's seat counters are left unchanged. The previous access token then gets `401`.
 
 Vehicles: `GET` and `POST /v1/me/vehicles`, `PATCH` and `DELETE /v1/me/vehicles/{id}`. Brand, model, color and plate are validated in the service. The plate is stored uppercased and must contain 4–10 letters and digits. Ownership is checked in the service; a vehicle that belongs to someone else is `404`, the same as a missing id. The default cap is 3 (`MAX_VEHICLES_PER_USER`). Creating a vehicle locks the user row so two parallel requests cannot both pass the cap.
 
 `GET /v1/locations` is public. Filters: `type` (`welayat`, `city`, `etrap`), `parent_id`, `q`, `active_only` (default `true`). `name` follows `Accept-Language`. `q` is a Unicode case-insensitive substring of the Turkmen, Russian and English names, applied in the service so it does not depend on the database locale. The directory is small, so the query reads the table and filters in memory. The response sets `ETag` (SHA-256 of the JSON) and `Cache-Control: public, max-age=300`. Repeat the call with `If-None-Match` to get `304` and an empty body. `Accept-Encoding: gzip` compresses the `200` body. `Vary` is `Accept-Language, Accept-Encoding`.
+
+## Trips and bookings
+
+All of these routes require a JWT. Trip JSON never contains a phone number. A booking contains `driver_phone` only for the passenger and only after approval, and `passenger.phone` only for the driver and only after approval.
+
+`POST /v1/trips` creates a trip. `departs_at` must be in the future, `seats_total` is 1..8, the two locations must differ and be active, and `vehicle_id`, when sent, must belong to the driver. `suggested_price` is optional (a decimal string or a JSON number) and is informational. Currency defaults to `TMT`.
+
+`GET /v1/trips` searches bookable trips. Filters: `from`, `to`, `date` (`YYYY-MM-DD` in Asia/Ashgabat, UTC+5), `seats` (minimum `seats_left`), `page` (default 1), `page_size` (default 20, max 50). A welayat id includes that location when it is active and every active descendant, including descendants reached through an inactive parent. The recursive walk stops at depth 8. Cancelled, full, completed, expired and past trips are excluded, as are trips with no seats left, trips of a deleted or admin-blocked driver, and trips whose driver is blocked with the caller in either direction. `GET /v1/trips/{id}` returns any status. A blocked viewer who is not the driver gets `404 TRIP_NOT_FOUND`.
+
+`PATCH /v1/trips/{id}` is the driver only, and only while the trip is `active` or `full`. `seats_total` cannot fall below the seats already approved (`409 INVALID_STATE`). `seats_left` is adjusted in the same update: zero seats left makes the trip `full`, and freeing a seat on a full trip makes it `active` again. Another user gets `403 FORBIDDEN`.
+
+`POST /v1/trips/{id}/cancel` is the driver only. In one transaction the trip becomes `cancelled` and every pending or approved booking becomes `cancelled_by_driver`. Calling it again is a no-op. `POST /v1/trips/{id}/complete` is the driver only, at or after `departs_at`. It does not change bookings. `GET /v1/me/trips?status=` lists the driver's trips.
+
+`POST /v1/trips/{id}/bookings {"seats":1}` is the passenger. Booking your own trip, or a user blocked in either direction, is `403 FORBIDDEN`. The trip must be `active` and in the future with enough `seats_left`. Pending requests do not reserve seats; approval does. A second live request by the same passenger is `409 BOOKING_EXISTS` (the partial unique index). `GET /v1/me/bookings` is the passenger's list and includes the trip. `GET /v1/trips/{id}/bookings` is the driver's list.
+
+`POST /v1/bookings/{id}/approve` runs in one database transaction: lock the acting user, lock the trip with `SELECT ... FOR UPDATE`, lock the booking, check status and `seats_left`, decrement `seats_left`, set the trip to `full` at zero, then set the booking to `approved`. Approving the same booking again does not take the seats a second time. Not enough seats is `409 SEAT_UNAVAILABLE`. `POST /v1/bookings/{id}/reject` is the driver and only for a pending booking. `POST /v1/bookings/{id}/cancel` is the passenger or the driver. Cancelling an approved booking restores the seats and re-opens a `full` trip in that same locked transaction.
+
+Those decisions call `notify.Notifier` after the transaction commits: `booking_requested`, `booking_approved`, `booking_rejected`, `booking_cancelled`, and `trip_cancelled` (one event per passenger when a trip is cancelled, not a second booking event). The implementation in this phase is a no-op. A notifier error is logged and does not fail the request. Phase E will store the events in the inbox table.
+
+Mutating requests lock the acting user before the trip, and the trip before the booking, which is the same order account deletion uses.
 
 ## Verify
 
@@ -271,7 +301,31 @@ curl -s -D - -o /dev/null -H 'Accept-Language: ru' -H "If-None-Match: $ETAG" "$B
 curl -s -H 'Accept-Encoding: gzip' -H 'Accept-Language: en' --compressed \
   "$BASE/v1/locations?q=mary&active_only=true"
 
+# Phase D. Two users. ASH and MARY are location ids from GET /v1/locations
+# (Ashgabat city c2000000-0000-4000-8000-000000000001, Mary city c2000000-0000-4000-8000-000000000008).
+# Sign the passenger in the same way as step 4, with a second phone, and keep PASSENGER_TOKEN.
+# DEPARTS must be in the future.
+
+curl -s -X POST $BASE/v1/trips -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"from_location_id":"c2000000-0000-4000-8000-000000000001","to_location_id":"c2000000-0000-4000-8000-000000000008","departs_at":"2026-12-01T08:00:00Z","seats_total":2,"suggested_price":"25.50"}'
+# Search from the passenger. A welayat id expands to its active cities. The JSON has no phone.
+curl -s "$BASE/v1/trips?from=c2000000-0000-4000-8000-000000000001&to=a1000000-0000-4000-8000-000000000005&seats=1" \
+  -H "Authorization: Bearer $PASSENGER_TOKEN"
+curl -s -X POST $BASE/v1/trips/<TRIP_ID>/bookings -H "Authorization: Bearer $PASSENGER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"seats":1}'
+# Before approval neither booking list contains a phone number.
+curl -s $BASE/v1/me/bookings -H "Authorization: Bearer $PASSENGER_TOKEN"
+curl -s $BASE/v1/trips/<TRIP_ID>/bookings -H "Authorization: Bearer $TOKEN"
+curl -s -X POST $BASE/v1/bookings/<BOOKING_ID>/approve -H "Authorization: Bearer $TOKEN"
+# After approval the passenger sees driver_phone and the driver sees passenger.phone.
+curl -s $BASE/v1/me/bookings -H "Authorization: Bearer $PASSENGER_TOKEN"
+curl -s $BASE/v1/trips/<TRIP_ID>/bookings -H "Authorization: Bearer $TOKEN"
+curl -s -X POST $BASE/v1/bookings/<BOOKING_ID>/cancel -H "Authorization: Bearer $PASSENGER_TOKEN"
+# Cancelling the approved booking re-opens a full trip. The driver can also reject, or:
+curl -s -X POST $BASE/v1/trips/<TRIP_ID>/cancel -H "Authorization: Bearer $TOKEN"
+
 # Anonymize. The same phone can verify-otp again and gets a new empty user.
+# This also cancels the caller's active trips and passenger bookings and deletes their vehicles.
 curl -s -i -X DELETE $BASE/v1/me -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -312,3 +366,17 @@ Phase C:
 - Images wider or taller than 2048 px are rejected. Clients should resize before upload.
 - Location search runs in the service after one ordered read of the `locations` table. That keeps Turkmen and Russian case-folding working on any database locale. The table is welayats, cities and, later, etraps.
 - Profile photos in Docker live at `/data/photos` inside the image. Mount a volume there only if it is writable by uid 65532; a root-owned named volume is not.
+
+Phase D:
+
+- `date` on trip search is a calendar day in Asia/Ashgabat (UTC+5, no daylight saving), not UTC.
+- Pagination is page-based. `page` defaults to 1, `page_size` to 20, and `page_size` cannot exceed 50. The response is `{trips|bookings, page, page_size, has_more}` and does not include a total count.
+- A welayat search includes the welayat itself when it is active, plus every active descendant. The walk goes through inactive parents and stops at depth 8.
+- Pending bookings do not reserve seats. Two passengers can both request the last seat; only the approval that still sees `seats_left` succeeds.
+- `suggested_price` is a decimal string in responses (`"25.50"`). Requests may send that string or a JSON number. Currency is any 3 letters and defaults to `TMT`.
+- Trip search also hides trips whose driver is deleted or `is_blocked`. Direct `GET /v1/trips/{id}` still returns those trips unless a `user_blocks` row exists in either direction.
+- Completing a trip does not change its bookings. The maintenance job does not either. `expired` was added to `trip_status` for past trips that nobody was approved onto.
+- Cancelling a trip notifies passengers with `trip_cancelled` only. It does not also emit `booking_cancelled`.
+- The notifier is `notify.Nop` until Phase E. It does not write an inbox row.
+- Account deletion restores seats only on `active` and `full` trips. A restore that would exceed `seats_total` still cancels the booking and leaves the trip counters alone, so a corrupted seat total cannot block deletion.
+- Old sent SMS rows are not deleted yet. The job already removes expired OTP codes and refresh tokens.

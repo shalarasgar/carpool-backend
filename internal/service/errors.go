@@ -39,6 +39,12 @@ var (
 	ErrVehicleLimit         = &Error{Code: "VEHICLE_LIMIT"}
 	ErrPhotoTooLarge        = &Error{Code: "PHOTO_TOO_LARGE"}
 	ErrPhotoType            = &Error{Code: "PHOTO_TYPE_UNSUPPORTED"}
+	ErrForbidden            = &Error{Code: "FORBIDDEN"}
+	ErrSeatUnavailable      = &Error{Code: "SEAT_UNAVAILABLE"}
+	ErrTripNotFound         = &Error{Code: "TRIP_NOT_FOUND"}
+	ErrBookingNotFound      = &Error{Code: "BOOKING_NOT_FOUND"}
+	ErrInvalidState         = &Error{Code: "INVALID_STATE"}
+	ErrBookingExists        = &Error{Code: "BOOKING_EXISTS"}
 	errUserNotFoundInternal = errors.New("user not found")
 )
 

@@ -24,6 +24,8 @@ type Deps struct {
 	Users      *service.Users
 	Vehicles   *service.Vehicles
 	Locations  *service.Locations
+	Trips      *service.Trips
+	Bookings   *service.Bookings
 	Photos     storage.Store
 	PhotoMax   int64
 	AdminToken string
@@ -86,6 +88,23 @@ func NewRouter(deps Deps) http.Handler {
 			r.Post("/me/vehicles", vehH.Create)
 			r.Patch("/me/vehicles/{id}", vehH.Patch)
 			r.Delete("/me/vehicles/{id}", vehH.Delete)
+			if deps.Trips != nil && deps.Bookings != nil {
+				tripsH := handlers.Trips{Logger: logger, Service: deps.Trips}
+				bookH := handlers.Bookings{Logger: logger, Service: deps.Bookings}
+				r.Get("/me/trips", tripsH.Mine)
+				r.Get("/me/bookings", bookH.Mine)
+				r.Get("/trips", tripsH.List)
+				r.Post("/trips", tripsH.Create)
+				r.Get("/trips/{id}", tripsH.Get)
+				r.Patch("/trips/{id}", tripsH.Patch)
+				r.Post("/trips/{id}/cancel", tripsH.Cancel)
+				r.Post("/trips/{id}/complete", tripsH.Complete)
+				r.Post("/trips/{id}/bookings", bookH.Create)
+				r.Get("/trips/{id}/bookings", bookH.ForTrip)
+				r.Post("/bookings/{id}/approve", bookH.Approve)
+				r.Post("/bookings/{id}/reject", bookH.Reject)
+				r.Post("/bookings/{id}/cancel", bookH.Cancel)
+			}
 		})
 	}
 

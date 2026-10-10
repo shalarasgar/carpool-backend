@@ -97,6 +97,11 @@ var statusByCode = map[string]int{
 	"VEHICLE_LIMIT":          http.StatusUnprocessableEntity,
 	"PHOTO_TOO_LARGE":        http.StatusRequestEntityTooLarge,
 	"PHOTO_TYPE_UNSUPPORTED": http.StatusUnprocessableEntity,
+	"SEAT_UNAVAILABLE":       http.StatusConflict,
+	"TRIP_NOT_FOUND":         http.StatusNotFound,
+	"BOOKING_NOT_FOUND":      http.StatusNotFound,
+	"INVALID_STATE":          http.StatusConflict,
+	"BOOKING_EXISTS":         http.StatusConflict,
 }
 
 // writeServiceError translates a service error into the envelope. Unknown

@@ -78,6 +78,17 @@ func (q *Queries) CreateUserIfMissing(ctx context.Context, arg CreateUserIfMissi
 	return result.RowsAffected(), nil
 }
 
+const getActiveUserPhone = `-- name: GetActiveUserPhone :one
+SELECT phone FROM users WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetActiveUserPhone(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getActiveUserPhone, id)
+	var phone string
+	err := row.Scan(&phone)
+	return phone, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at, deleted_at FROM users WHERE id = $1
 `

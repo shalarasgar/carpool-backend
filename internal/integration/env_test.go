@@ -30,6 +30,7 @@ import (
 	server "github.com/shalarasgar/carpool-backend/internal/http"
 	"github.com/shalarasgar/carpool-backend/internal/jobs"
 	appmigrate "github.com/shalarasgar/carpool-backend/internal/migrate"
+	"github.com/shalarasgar/carpool-backend/internal/notify"
 	"github.com/shalarasgar/carpool-backend/internal/ratelimit"
 	"github.com/shalarasgar/carpool-backend/internal/service"
 	"github.com/shalarasgar/carpool-backend/internal/sms"
@@ -119,6 +120,7 @@ func newEnv(t *testing.T) *env {
 	photos, err := storage.NewLocal(t.TempDir(), "/v1/media/photos")
 	require.NoError(t, err)
 	const photoMax = 8 << 10
+	notifier := notify.Nop{Logger: logger}
 	router := server.NewRouter(server.Deps{
 		Logger:     logger,
 		Health:     service.NewHealth(store.NewReadiness(pool), logger),
@@ -127,6 +129,8 @@ func newEnv(t *testing.T) *env {
 		Users:      service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: photoMax, AllowedTypes: []string{"image/jpeg", "image/png", "image/webp"}, PhoneHashKey: "integration-otp-secret-value"}, logger),
 		Vehicles:   service.NewVehicles(pool, 2, logger),
 		Locations:  service.NewLocations(pool),
+		Trips:      service.NewTrips(pool, notifier, logger),
+		Bookings:   service.NewBookings(pool, notifier, logger),
 		Photos:     photos,
 		PhotoMax:   photoMax,
 		AdminToken: testAdminToken,

@@ -11,6 +11,39 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getLocationByID = `-- name: GetLocationByID :one
+SELECT id, parent_id, type, name_tk, name_ru, name_en, is_active, sort_order
+FROM locations
+WHERE id = $1
+`
+
+type GetLocationByIDRow struct {
+	ID        pgtype.UUID
+	ParentID  pgtype.UUID
+	Type      LocationType
+	NameTk    string
+	NameRu    string
+	NameEn    string
+	IsActive  bool
+	SortOrder int32
+}
+
+func (q *Queries) GetLocationByID(ctx context.Context, id pgtype.UUID) (GetLocationByIDRow, error) {
+	row := q.db.QueryRow(ctx, getLocationByID, id)
+	var i GetLocationByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.ParentID,
+		&i.Type,
+		&i.NameTk,
+		&i.NameRu,
+		&i.NameEn,
+		&i.IsActive,
+		&i.SortOrder,
+	)
+	return i, err
+}
+
 const listLocations = `-- name: ListLocations :many
 SELECT id, parent_id, type, name_tk, name_ru, name_en, is_active, sort_order
 FROM locations

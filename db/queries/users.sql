@@ -36,6 +36,9 @@ SELECT count(*)::int AS completed_trips
 FROM trips
 WHERE driver_id = $1 AND status = 'completed';
 
+-- name: GetActiveUserPhone :one
+SELECT phone FROM users WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: CountCompletedTripsAsPassenger :one
 SELECT count(*)::int AS completed_trips
 FROM bookings b

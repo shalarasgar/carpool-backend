@@ -1,13 +1,15 @@
 openapi: 3.0.3
 info:
   title: Carpool API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Backend for the Turkmenistan intercity carpool app.
 
-    Phase C adds the caller's profile, vehicles, public profiles and the
-    location directory. Phase B remains: phone + OTP authentication, token
-    refresh, the SMS gateway contract, and gateway registration.
+    Phase D adds trips, search and bookings. Approving a booking locks the
+    trip row and never oversells seats. Phone numbers appear only on a
+    booking, and only after it is approved. Phase C remains: profile,
+    vehicles, public profiles and the location directory. Phase B remains:
+    phone + OTP authentication, token refresh, and the SMS gateway contract.
 
     **Localization.** Send `Accept-Language: tk`, `ru` or `en`. Error
     messages are localized; the default is `tk`. The response carries
@@ -27,6 +29,8 @@ tags:
   - name: users
   - name: vehicles
   - name: locations
+  - name: trips
+  - name: bookings
   - name: gateway
     description: "Called by the Android SMS gateway app. Authenticate with `Authorization: Bearer <api_key>`."
   - name: admin
@@ -676,6 +680,408 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /v1/trips:
+    get:
+      tags: [trips]
+      summary: Search bookable trips
+      description: |
+        Requires a JWT. `from` and `to` are location ids. When either id is a
+        welayat, the search includes that location if it is active and every
+        active descendant, walking through inactive parents. Cancelled, full,
+        completed, expired and past trips are excluded, as are trips with no
+        seats left, trips of a deleted or admin-blocked driver, and trips whose
+        driver is blocked in either direction with the caller. Results are
+        ordered by `departs_at` ascending. `date` is a `YYYY-MM-DD` calendar
+        day in Asia/Ashgabat (UTC+5). `seats` is the minimum `seats_left`.
+        `page` defaults to 1 and `page_size` to 20 (maximum 50). The payload
+        never includes a phone number.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: from, in: query, schema: { type: string, format: uuid } }
+        - { name: to, in: query, schema: { type: string, format: uuid } }
+        - { name: date, in: query, schema: { type: string, format: date }, description: "Calendar day in Asia/Ashgabat, YYYY-MM-DD." }
+        - { name: seats, in: query, schema: { type: integer, minimum: 1, maximum: 8 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Matching trips
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TripPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    post:
+      tags: [trips]
+      summary: Publish a trip
+      description: |
+        The driver must send `departs_at` in the future, `seats_total` from 1
+        to 8, two different active locations, and, when set, a vehicle that
+        belongs to them. `suggested_price` is an informational decimal string
+        or number. Currency defaults to `TMT`.
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_location_id, to_location_id, departs_at, seats_total]
+              properties:
+                vehicle_id: { type: string, format: uuid, nullable: true }
+                from_location_id: { type: string, format: uuid }
+                to_location_id: { type: string, format: uuid }
+                departs_at: { type: string, format: date-time }
+                seats_total: { type: integer, minimum: 1, maximum: 8 }
+                suggested_price: { type: string, nullable: true, example: "25.50", description: "A JSON number is also accepted." }
+                currency: { type: string, minLength: 3, maxLength: 3, example: TMT }
+                pickup_note: { type: string, maxLength: 500 }
+                dropoff_note: { type: string, maxLength: 500 }
+                note: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Created trip
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/trips/{id}:
+    get:
+      tags: [trips]
+      summary: Get a trip
+      description: Any status is returned. A caller blocked in either direction with the driver receives `TRIP_NOT_FOUND`, except the driver, who always sees their own trip. No phone number.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Trip
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`TRIP_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      tags: [trips]
+      summary: Update the driver's trip
+      description: |
+        Only the driver, and only while the trip is `active` or `full`.
+        `seats_total` cannot drop below the number of already approved seats.
+        `seats_left` moves with that change. Zero seats left sets status
+        `full`; freeing a seat on a full trip sets it back to `active`.
+        Send `vehicle_id` or `suggested_price` as null to clear them.
+        Another caller receives `403 FORBIDDEN`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vehicle_id: { type: string, format: uuid, nullable: true }
+                from_location_id: { type: string, format: uuid }
+                to_location_id: { type: string, format: uuid }
+                departs_at: { type: string, format: date-time }
+                seats_total: { type: integer, minimum: 1, maximum: 8 }
+                suggested_price: { type: string, nullable: true, example: "25.50" }
+                currency: { type: string, minLength: 3, maxLength: 3 }
+                pickup_note: { type: string, maxLength: 500 }
+                dropoff_note: { type: string, maxLength: 500 }
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Updated trip
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`TRIP_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`INVALID_STATE` when the trip is not editable or seats would fall below approved seats"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/trips/{id}/cancel:
+    post:
+      tags: [trips]
+      summary: Cancel a trip and its live bookings
+      description: |
+        Driver only. One transaction sets the trip to `cancelled` and every
+        pending or approved booking to `cancelled_by_driver`. Repeating the
+        call is a no-op. Each affected passenger is handed to the Notifier as
+        `trip_cancelled`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Cancelled trip
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`TRIP_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`INVALID_STATE` for a completed or expired trip"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/trips/{id}/complete:
+    post:
+      tags: [trips]
+      summary: Mark a trip completed
+      description: Driver only, and only at or after `departs_at`, while the trip is `active` or `full`. Bookings are not changed. Repeating it is a no-op.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Completed trip
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`TRIP_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`INVALID_STATE` before departure, or when the trip is cancelled or expired"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/trips:
+    get:
+      tags: [trips]
+      summary: List the caller's trips as driver
+      description: Optional `status` is `active`, `full`, `cancelled`, `completed` or `expired`. Newest departure first. No phone numbers.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: status, in: query, schema: { type: string, enum: [active, full, cancelled, completed, expired] } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Driver trips
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TripPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/trips/{id}/bookings:
+    post:
+      tags: [bookings]
+      summary: Request seats
+      description: |
+        The passenger cannot book their own trip or a user blocked in either
+        direction (`403 FORBIDDEN`). The trip must be `active`, in the future,
+        and have enough `seats_left` (`409 SEAT_UNAVAILABLE` otherwise; another
+        bad state is `409 INVALID_STATE`). Pending requests do not reserve
+        seats. A second pending or approved request by the same passenger is
+        `409 BOOKING_EXISTS`. The response has no phone number.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seats]
+              properties:
+                seats: { type: integer, minimum: 1, maximum: 8 }
+      responses:
+        "201":
+          description: Pending booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`TRIP_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`SEAT_UNAVAILABLE`, `BOOKING_EXISTS` or `INVALID_STATE`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    get:
+      tags: [bookings]
+      summary: List requests on the driver's trip
+      description: Driver only. The passenger `phone` is present only when that booking is `approved`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Bookings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BookingPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`TRIP_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/bookings:
+    get:
+      tags: [bookings]
+      summary: List the caller's bookings as passenger
+      description: Newest first. Each item includes the trip, which has no phone number. `driver_phone` is present only when the booking is `approved`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Passenger bookings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BookingPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/bookings/{id}/approve:
+    post:
+      tags: [bookings]
+      summary: Approve a booking
+      description: |
+        Driver only. One transaction locks the trip row (`SELECT ... FOR UPDATE`),
+        checks that the trip is `active` and `seats_left` covers the request,
+        decrements `seats_left`, sets the trip to `full` when it reaches 0, and
+        sets the booking to `approved`. A repeated approve does not take the
+        seats again. Not enough seats is `409 SEAT_UNAVAILABLE`. The response,
+        seen by the driver, includes the passenger phone.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Approved booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`BOOKING_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`SEAT_UNAVAILABLE` or `INVALID_STATE`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/bookings/{id}/reject:
+    post:
+      tags: [bookings]
+      summary: Reject a pending booking
+      description: Driver only. An approved booking must be cancelled instead (`409 INVALID_STATE`). Rejecting twice is a no-op. No seat change and no phone number.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Rejected booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`BOOKING_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`INVALID_STATE`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/bookings/{id}/cancel:
+    post:
+      tags: [bookings]
+      summary: Cancel a booking
+      description: |
+        The passenger or the driver. Pending bookings change status only.
+        Cancelling an approved booking locks the trip, restores `seats_left`,
+        and sets a `full` trip back to `active`. That is refused with
+        `409 INVALID_STATE` when the trip is no longer `active` or `full`, or
+        when the stored seats cannot accept the restored seats. Repeating a
+        cancel is a no-op. After cancel the response has no phone number.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Cancelled booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`BOOKING_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`INVALID_STATE`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -761,6 +1167,11 @@ components:
                 - PHOTO_TOO_LARGE
                 - PHOTO_TYPE_UNSUPPORTED
                 - VEHICLE_LIMIT
+                - SEAT_UNAVAILABLE
+                - TRIP_NOT_FOUND
+                - BOOKING_NOT_FOUND
+                - INVALID_STATE
+                - BOOKING_EXISTS
             message: { type: string, description: Localized per Accept-Language. }
             details:
               type: object
@@ -867,3 +1278,105 @@ components:
         attempts: { type: integer, description: Previous failed delivery attempts. }
         locked_until: { type: string, format: date-time, description: Report before this time or the message is re-queued. }
         created_at: { type: string, format: date-time }
+
+    TripPage:
+      type: object
+      required: [trips, page, page_size, has_more]
+      properties:
+        trips:
+          type: array
+          items: { $ref: "#/components/schemas/Trip" }
+        page: { type: integer }
+        page_size: { type: integer }
+        has_more: { type: boolean }
+
+    Trip:
+      type: object
+      required: [id, driver, vehicle, from, to, departs_at, seats_total, seats_left, suggested_price, currency, status]
+      description: A trip never includes a phone number.
+      properties:
+        id: { type: string, format: uuid }
+        driver: { $ref: "#/components/schemas/TripDriver" }
+        vehicle:
+          nullable: true
+          allOf: [ { $ref: "#/components/schemas/TripVehicle" } ]
+        from: { $ref: "#/components/schemas/TripPlace" }
+        to: { $ref: "#/components/schemas/TripPlace" }
+        departs_at: { type: string, format: date-time }
+        seats_total: { type: integer }
+        seats_left: { type: integer }
+        suggested_price: { type: string, nullable: true, example: "25.50" }
+        currency: { type: string, example: TMT }
+        pickup_note: { type: string, nullable: true }
+        dropoff_note: { type: string, nullable: true }
+        note: { type: string, nullable: true }
+        status: { type: string, enum: [active, full, cancelled, completed, expired] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TripDriver:
+      type: object
+      description: Public driver card. No phone number.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        photo_url: { type: string, nullable: true }
+        rating_avg: { type: number, format: double }
+        rating_count: { type: integer }
+
+    TripVehicle:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        brand: { type: string }
+        model: { type: string }
+        color: { type: string }
+        plate: { type: string }
+
+    TripPlace:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [welayat, city, etrap] }
+        name: { type: string, description: Localized from Accept-Language. }
+
+    BookingPage:
+      type: object
+      required: [bookings, page, page_size, has_more]
+      properties:
+        bookings:
+          type: array
+          items: { $ref: "#/components/schemas/Booking" }
+        page: { type: integer }
+        page_size: { type: integer }
+        has_more: { type: boolean }
+
+    Booking:
+      type: object
+      required: [id, trip_id, seats, status, passenger, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        trip_id: { type: string, format: uuid }
+        seats: { type: integer }
+        status:
+          type: string
+          enum: [pending, approved, rejected, cancelled_by_passenger, cancelled_by_driver]
+        passenger: { $ref: "#/components/schemas/BookingPassenger" }
+        driver_phone:
+          type: string
+          description: Present only for the passenger, and only when status is approved.
+        trip:
+          allOf: [ { $ref: "#/components/schemas/Trip" } ]
+          description: Present on GET /v1/me/bookings. The nested trip has no phone number.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BookingPassenger:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        photo_url: { type: string, nullable: true }
+        phone:
+          type: string
+          description: Present only for the driver, and only when the booking is approved.

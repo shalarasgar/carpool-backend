@@ -321,6 +321,7 @@ type User struct {
 	IsBlocked   bool
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+	DeletedAt   pgtype.Timestamptz
 }
 
 type UserBlock struct {

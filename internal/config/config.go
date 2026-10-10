@@ -55,6 +55,15 @@ type Config struct {
 	// Background jobs
 	JobsInterval time.Duration `envconfig:"JOBS_INTERVAL" default:"30s"`
 
+	// Profile photos. Types are sniffed from the file bytes, not the multipart header.
+	PhotoMaxBytes     int64    `envconfig:"PHOTO_MAX_BYTES" default:"2097152"`
+	PhotoAllowedTypes []string `envconfig:"PHOTO_ALLOWED_TYPES" default:"image/jpeg,image/png,image/webp"`
+	PhotoDir          string   `envconfig:"PHOTO_DIR" default:"data/photos"`
+	PhotoURLPrefix    string   `envconfig:"PHOTO_URL_PREFIX" default:"/v1/media/photos"`
+
+	// Vehicles
+	MaxVehiclesPerUser int `envconfig:"MAX_VEHICLES_PER_USER" default:"3"`
+
 	// Set to true only behind a reverse proxy that overwrites X-Forwarded-For.
 	TrustProxyHeaders bool `envconfig:"TRUST_PROXY_HEADERS" default:"false"`
 
@@ -108,6 +117,10 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("sms_lock_duration", c.SMSLockDuration),
 		slog.Duration("sms_gateway_healthy_window", c.SMSGatewayHealthyWindow),
 		slog.Duration("jobs_interval", c.JobsInterval),
+		slog.Int64("photo_max_bytes", c.PhotoMaxBytes),
+		slog.Any("photo_allowed_types", c.PhotoAllowedTypes),
+		slog.String("photo_dir", c.PhotoDir),
+		slog.Int("max_vehicles_per_user", c.MaxVehiclesPerUser),
 		slog.Bool("trust_proxy_headers", c.TrustProxyHeaders),
 		slog.Int("db_max_conns", int(c.DBMaxConns)),
 		slog.Int("db_min_conns", int(c.DBMinConns)),
@@ -188,6 +201,28 @@ func (c Config) validate() error {
 	}
 	if c.JobsInterval <= 0 {
 		return fmt.Errorf("JOBS_INTERVAL must be greater than 0")
+	}
+	if c.PhotoMaxBytes < 1 || c.PhotoMaxBytes > 5<<20 {
+		return fmt.Errorf("PHOTO_MAX_BYTES must be between 1 and 5242880")
+	}
+	if len(c.PhotoAllowedTypes) == 0 {
+		return fmt.Errorf("PHOTO_ALLOWED_TYPES must list at least one type")
+	}
+	for _, kind := range c.PhotoAllowedTypes {
+		switch kind {
+		case "image/jpeg", "image/png", "image/webp":
+		default:
+			return fmt.Errorf("PHOTO_ALLOWED_TYPES contains unsupported type %q", kind)
+		}
+	}
+	if strings.TrimSpace(c.PhotoDir) == "" || strings.Contains(c.PhotoDir, "\x00") {
+		return fmt.Errorf("PHOTO_DIR is required")
+	}
+	if !strings.HasPrefix(c.PhotoURLPrefix, "/") || strings.HasSuffix(c.PhotoURLPrefix, "/") || strings.Contains(c.PhotoURLPrefix, "..") {
+		return fmt.Errorf("PHOTO_URL_PREFIX must be an absolute path without a trailing slash")
+	}
+	if c.MaxVehiclesPerUser < 1 || c.MaxVehiclesPerUser > 20 {
+		return fmt.Errorf("MAX_VEHICLES_PER_USER must be between 1 and 20")
 	}
 	return nil
 }

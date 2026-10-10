@@ -2,7 +2,9 @@ version: "2"
 sql:
   - engine: postgresql
     queries: db/queries
-    schema: migrations/000001_init_schema.up.sql
+    schema:
+      - migrations/000001_init_schema.up.sql
+      - migrations/000004_users_anonymize.up.sql
     gen:
       go:
         package: store

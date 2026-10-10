@@ -33,6 +33,7 @@ import (
 	"github.com/shalarasgar/carpool-backend/internal/ratelimit"
 	"github.com/shalarasgar/carpool-backend/internal/service"
 	"github.com/shalarasgar/carpool-backend/internal/sms"
+	"github.com/shalarasgar/carpool-backend/internal/storage"
 	"github.com/shalarasgar/carpool-backend/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -115,11 +116,19 @@ func newEnv(t *testing.T) *env {
 	}, logger)
 	e.jobs = jobs.New(pool, jobs.Config{Interval: time.Minute, GatewayHealthyWindow: 30 * time.Second}, logger)
 
+	photos, err := storage.NewLocal(t.TempDir(), "/v1/media/photos")
+	require.NoError(t, err)
+	const photoMax = 8 << 10
 	router := server.NewRouter(server.Deps{
 		Logger:     logger,
 		Health:     service.NewHealth(store.NewReadiness(pool), logger),
 		Auth:       e.auth,
 		Gateway:    e.gateway,
+		Users:      service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: photoMax, AllowedTypes: []string{"image/jpeg", "image/png", "image/webp"}, PhoneHashKey: "integration-otp-secret-value"}, logger),
+		Vehicles:   service.NewVehicles(pool, 2, logger),
+		Locations:  service.NewLocations(pool),
+		Photos:     photos,
+		PhotoMax:   photoMax,
 		AdminToken: testAdminToken,
 	})
 	e.srv = httptest.NewServer(router)

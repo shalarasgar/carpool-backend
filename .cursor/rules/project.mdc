@@ -10,3 +10,4 @@ alwaysApply: true
 - Never log OTP codes, tokens or full phone numbers.
 - Do not add features not listed in the spec (no payments, chat, maps APIs).
 - If something is ambiguous, pick the simplest option and note it in README.
+- Never run `go get ... @latest` or bump the `go` directive in go.mod. Keep versions compatible with the Dockerfile's Go image.

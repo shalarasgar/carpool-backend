@@ -259,6 +259,10 @@ func (a *Auth) VerifyOTP(ctx context.Context, in VerifyOTPInput) (LoginResult, e
 		if err != nil {
 			return fmt.Errorf("load user: %w", err)
 		}
+		if user.DeletedAt.Valid {
+			business = ErrUnauthorized
+			return nil
+		}
 		if user.IsBlocked {
 			business = ErrUserBlocked
 			return nil
@@ -321,6 +325,10 @@ func (a *Auth) Refresh(ctx context.Context, refreshToken string) (Tokens, error)
 		if err != nil {
 			return fmt.Errorf("load user: %w", err)
 		}
+		if user.DeletedAt.Valid {
+			business = ErrUnauthorized
+			return nil
+		}
 		if user.IsBlocked {
 			business = ErrUserBlocked
 			return nil
@@ -359,6 +367,30 @@ func (a *Auth) VerifyAccessToken(token string) (userID, deviceID string, err err
 		return "", "", ErrUnauthorized
 	}
 	return claims.Subject, claims.DeviceID, nil
+}
+
+// AccountStatus rejects blocked and anonymized users on every authenticated
+// route. A deleted account is unauthorized so the client signs in again;
+// a blocked account is USER_BLOCKED.
+func (a *Auth) AccountStatus(ctx context.Context, userID string) error {
+	var id pgtype.UUID
+	if err := id.Scan(userID); err != nil || !id.Valid {
+		return ErrUnauthorized
+	}
+	user, err := a.q.GetUserByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return fmt.Errorf("load user: %w", err)
+	}
+	if user.DeletedAt.Valid {
+		return ErrUnauthorized
+	}
+	if user.IsBlocked {
+		return ErrUserBlocked
+	}
+	return nil
 }
 
 // issueTokens creates a fresh refresh token row and signs an access token.

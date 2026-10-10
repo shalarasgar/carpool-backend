@@ -29,6 +29,10 @@ services:
       ADMIN_TOKEN: dev-admin-token-change
       MIGRATE_ON_START: "true"
       SMS_PROVIDER: queue
+      PHOTO_DIR: /data/photos
+      PHOTO_MAX_BYTES: "2097152"
+      PHOTO_ALLOWED_TYPES: image/jpeg,image/png,image/webp
+      MAX_VEHICLES_PER_USER: "3"
     depends_on:
       postgres:
         condition: service_healthy

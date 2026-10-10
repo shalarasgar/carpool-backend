@@ -7,12 +7,20 @@ import (
 )
 
 // Error is a business error with a stable machine-readable code. The HTTP
-// layer maps codes to status lines and localized messages.
+// layer maps codes to status lines and localized messages. Details carries
+// field-level validation hints (field name to failed rule).
 type Error struct {
-	Code string
+	Code    string
+	Details map[string]string
 }
 
 func (e *Error) Error() string { return e.Code }
+
+// Is matches business errors by code so errors.Is works for sentinels.
+func (e *Error) Is(target error) bool {
+	other, ok := target.(*Error)
+	return ok && other != nil && e.Code == other.Code
+}
 
 // Sentinel business errors.
 var (
@@ -27,8 +35,16 @@ var (
 	ErrSMSNotFound          = &Error{Code: "SMS_NOT_FOUND"}
 	ErrGatewayExists        = &Error{Code: "GATEWAY_EXISTS"}
 	ErrValidation           = &Error{Code: "VALIDATION_ERROR"}
+	ErrNotFound             = &Error{Code: "NOT_FOUND"}
+	ErrVehicleLimit         = &Error{Code: "VEHICLE_LIMIT"}
+	ErrPhotoTooLarge        = &Error{Code: "PHOTO_TOO_LARGE"}
+	ErrPhotoType            = &Error{Code: "PHOTO_TYPE_UNSUPPORTED"}
 	errUserNotFoundInternal = errors.New("user not found")
 )
+
+func validationError(details map[string]string) *Error {
+	return &Error{Code: "VALIDATION_ERROR", Details: details}
+}
 
 // RateLimitError is returned when a limiter rejects a request.
 type RateLimitError struct {

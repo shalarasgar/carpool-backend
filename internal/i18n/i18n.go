@@ -203,4 +203,19 @@ var messages = map[string]map[string]string{
 		LocaleRU: "Шлюз с таким именем уже существует.",
 		LocaleEN: "A gateway with this name already exists.",
 	},
+	"PHOTO_TOO_LARGE": {
+		LocaleTK: "Surat faýly örän uly.",
+		LocaleRU: "Файл изображения слишком большой.",
+		LocaleEN: "The image file is too large.",
+	},
+	"PHOTO_TYPE_UNSUPPORTED": {
+		LocaleTK: "Surat JPEG, PNG ýa-da WebP bolmaly.",
+		LocaleRU: "Допустимы только изображения JPEG, PNG или WebP.",
+		LocaleEN: "Only JPEG, PNG or WebP images are allowed.",
+	},
+	"VEHICLE_LIMIT": {
+		LocaleTK: "Ulag sany çäkden geçdi.",
+		LocaleRU: "Достигнут предел числа автомобилей.",
+		LocaleEN: "You have reached the vehicle limit.",
+	},
 }

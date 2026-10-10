@@ -80,19 +80,23 @@ func toSnake(s string) string {
 
 // statusByCode maps business codes to HTTP statuses.
 var statusByCode = map[string]int{
-	"INVALID_PHONE":         http.StatusUnprocessableEntity,
-	"VALIDATION_ERROR":      http.StatusUnprocessableEntity,
-	"OTP_INVALID":           http.StatusUnauthorized,
-	"OTP_EXPIRED":           http.StatusUnauthorized,
-	"OTP_ATTEMPTS_EXCEEDED": http.StatusUnauthorized,
-	"REFRESH_TOKEN_INVALID": http.StatusUnauthorized,
-	"REFRESH_TOKEN_EXPIRED": http.StatusUnauthorized,
-	"UNAUTHORIZED":          http.StatusUnauthorized,
-	"USER_BLOCKED":          http.StatusForbidden,
-	"FORBIDDEN":             http.StatusForbidden,
-	"SMS_NOT_FOUND":         http.StatusNotFound,
-	"GATEWAY_EXISTS":        http.StatusConflict,
-	"RATE_LIMITED":          http.StatusTooManyRequests,
+	"INVALID_PHONE":          http.StatusUnprocessableEntity,
+	"VALIDATION_ERROR":       http.StatusUnprocessableEntity,
+	"OTP_INVALID":            http.StatusUnauthorized,
+	"OTP_EXPIRED":            http.StatusUnauthorized,
+	"OTP_ATTEMPTS_EXCEEDED":  http.StatusUnauthorized,
+	"REFRESH_TOKEN_INVALID":  http.StatusUnauthorized,
+	"REFRESH_TOKEN_EXPIRED":  http.StatusUnauthorized,
+	"UNAUTHORIZED":           http.StatusUnauthorized,
+	"USER_BLOCKED":           http.StatusForbidden,
+	"FORBIDDEN":              http.StatusForbidden,
+	"SMS_NOT_FOUND":          http.StatusNotFound,
+	"NOT_FOUND":              http.StatusNotFound,
+	"GATEWAY_EXISTS":         http.StatusConflict,
+	"RATE_LIMITED":           http.StatusTooManyRequests,
+	"VEHICLE_LIMIT":          http.StatusUnprocessableEntity,
+	"PHOTO_TOO_LARGE":        http.StatusRequestEntityTooLarge,
+	"PHOTO_TYPE_UNSUPPORTED": http.StatusUnprocessableEntity,
 }
 
 // writeServiceError translates a service error into the envelope. Unknown
@@ -108,10 +112,12 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		httperr.WriteCode(w, r, http.StatusTooManyRequests, "RATE_LIMITED")
 		return
 	}
-	code := service.CodeOf(err)
-	if status, ok := statusByCode[code]; ok {
-		httperr.WriteCode(w, r, status, code)
-		return
+	var be *service.Error
+	if errors.As(err, &be) {
+		if status, ok := statusByCode[be.Code]; ok {
+			httperr.WriteCodeDetails(w, r, status, be.Code, be.Details)
+			return
+		}
 	}
 	if logger == nil {
 		logger = slog.Default()

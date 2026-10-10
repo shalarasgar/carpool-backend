@@ -11,6 +11,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const anonymizeUser = `-- name: AnonymizeUser :execrows
+UPDATE users
+SET name = '', photo_url = NULL, phone = $2, deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type AnonymizeUserParams struct {
+	ID    pgtype.UUID
+	Phone string
+}
+
+func (q *Queries) AnonymizeUser(ctx context.Context, arg AnonymizeUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, anonymizeUser, arg.ID, arg.Phone)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const countCompletedTripsAsDriver = `-- name: CountCompletedTripsAsDriver :one
+SELECT count(*)::int AS completed_trips
+FROM trips
+WHERE driver_id = $1 AND status = 'completed'
+`
+
+func (q *Queries) CountCompletedTripsAsDriver(ctx context.Context, driverID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countCompletedTripsAsDriver, driverID)
+	var completed_trips int32
+	err := row.Scan(&completed_trips)
+	return completed_trips, err
+}
+
+const countCompletedTripsAsPassenger = `-- name: CountCompletedTripsAsPassenger :one
+SELECT count(*)::int AS completed_trips
+FROM bookings b
+JOIN trips t ON t.id = b.trip_id
+WHERE b.passenger_id = $1
+  AND b.status = 'approved'
+  AND t.status = 'completed'
+`
+
+func (q *Queries) CountCompletedTripsAsPassenger(ctx context.Context, passengerID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countCompletedTripsAsPassenger, passengerID)
+	var completed_trips int32
+	err := row.Scan(&completed_trips)
+	return completed_trips, err
+}
+
 const createUserIfMissing = `-- name: CreateUserIfMissing :execrows
 INSERT INTO users (phone, locale)
 VALUES ($1, $2)
@@ -31,7 +79,7 @@ func (q *Queries) CreateUserIfMissing(ctx context.Context, arg CreateUserIfMissi
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at FROM users WHERE id = $1
+SELECT id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at, deleted_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -48,12 +96,36 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 		&i.IsBlocked,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getUserByIDForUpdate = `-- name: GetUserByIDForUpdate :one
+SELECT id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at, deleted_at FROM users WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetUserByIDForUpdate(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByIDForUpdate, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.Name,
+		&i.PhotoUrl,
+		&i.RatingAvg,
+		&i.RatingCount,
+		&i.Locale,
+		&i.IsBlocked,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getUserByPhone = `-- name: GetUserByPhone :one
-SELECT id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at FROM users WHERE phone = $1
+SELECT id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at, deleted_at FROM users WHERE phone = $1
 `
 
 func (q *Queries) GetUserByPhone(ctx context.Context, phone string) (User, error) {
@@ -70,6 +142,80 @@ func (q *Queries) GetUserByPhone(ctx context.Context, phone string) (User, error
 		&i.IsBlocked,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const setUserPhoto = `-- name: SetUserPhoto :one
+UPDATE users
+SET photo_url = $2
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at, deleted_at
+`
+
+type SetUserPhotoParams struct {
+	ID       pgtype.UUID
+	PhotoUrl pgtype.Text
+}
+
+func (q *Queries) SetUserPhoto(ctx context.Context, arg SetUserPhotoParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserPhoto, arg.ID, arg.PhotoUrl)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.Name,
+		&i.PhotoUrl,
+		&i.RatingAvg,
+		&i.RatingCount,
+		&i.Locale,
+		&i.IsBlocked,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const updateUserProfile = `-- name: UpdateUserProfile :one
+UPDATE users
+SET
+    name = CASE WHEN $1::boolean THEN $2 ELSE name END,
+    locale = CASE WHEN $3::boolean THEN $4 ELSE locale END
+WHERE id = $5 AND deleted_at IS NULL
+RETURNING id, phone, name, photo_url, rating_avg, rating_count, locale, is_blocked, created_at, updated_at, deleted_at
+`
+
+type UpdateUserProfileParams struct {
+	UpdateName   bool
+	Name         string
+	UpdateLocale bool
+	Locale       string
+	ID           pgtype.UUID
+}
+
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserProfile,
+		arg.UpdateName,
+		arg.Name,
+		arg.UpdateLocale,
+		arg.Locale,
+		arg.ID,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.Name,
+		&i.PhotoUrl,
+		&i.RatingAvg,
+		&i.RatingCount,
+		&i.Locale,
+		&i.IsBlocked,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }

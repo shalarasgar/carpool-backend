@@ -23,6 +23,20 @@ func (fakeVerifier) VerifyAccessToken(token string) (string, string, error) {
 	return "", "", service.ErrUnauthorized
 }
 
+func (fakeVerifier) AccountStatus(context.Context, string) error { return nil }
+
+type blockingVerifier struct{ fakeVerifier }
+
+func (blockingVerifier) AccountStatus(context.Context, string) error {
+	return service.ErrUserBlocked
+}
+
+type statusErrVerifier struct{ fakeVerifier }
+
+func (statusErrVerifier) AccountStatus(context.Context, string) error {
+	return errors.New("db down")
+}
+
 type fakeGateways struct{ dbErr error }
 
 func (f fakeGateways) Authenticate(_ context.Context, key string) (service.GatewayIdentity, error) {
@@ -75,6 +89,23 @@ func TestRequireUser(t *testing.T) {
 
 	lower := run(t, mw, "bearer good", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	require.Equal(t, http.StatusNoContent, lower.Code, "scheme is case-insensitive")
+}
+
+func TestRequireUserRejectsBlockedAndUnavailableAccounts(t *testing.T) {
+	t.Parallel()
+
+	blocked := run(t, RequireUser(blockingVerifier{}), "Bearer good", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler must not run")
+	})
+	require.Equal(t, http.StatusForbidden, blocked.Code)
+	require.Equal(t, "USER_BLOCKED", code(t, blocked))
+
+	down := run(t, RequireUser(statusErrVerifier{}), "Bearer good", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler must not run")
+	})
+	require.Equal(t, http.StatusInternalServerError, down.Code)
+	require.Equal(t, "INTERNAL", code(t, down))
+	require.NotContains(t, down.Body.String(), "db down")
 }
 
 func TestRequireGateway(t *testing.T) {

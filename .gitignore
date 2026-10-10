@@ -12,8 +12,9 @@
 *.out
 coverage.*
 
-# Uploads (kullanıcı fotoğrafları)
+# Uploads (profile photos)
 /uploads/
+/data/
 
 # IDE / OS
 .idea/

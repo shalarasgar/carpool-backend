@@ -10,15 +10,22 @@ import (
 	"github.com/shalarasgar/carpool-backend/internal/http/handlers"
 	"github.com/shalarasgar/carpool-backend/internal/http/middleware"
 	"github.com/shalarasgar/carpool-backend/internal/service"
+	"github.com/shalarasgar/carpool-backend/internal/storage"
 )
 
-// Deps are the dependencies of the HTTP server. Auth and Gateway may be nil
-// in tests that only exercise health routes; their routes are then skipped.
+// Deps are the dependencies of the HTTP server. Auth, Gateway, Users and
+// Locations may be nil in tests that only exercise health routes; their
+// routes are then skipped.
 type Deps struct {
 	Logger     *slog.Logger
 	Health     *service.Health
 	Auth       *service.Auth
 	Gateway    *service.Gateway
+	Users      *service.Users
+	Vehicles   *service.Vehicles
+	Locations  *service.Locations
+	Photos     storage.Store
+	PhotoMax   int64
 	AdminToken string
 	TrustProxy bool
 }
@@ -54,6 +61,31 @@ func NewRouter(deps Deps) http.Handler {
 			r.Post("/verify-otp", authH.VerifyOTP)
 			r.Post("/refresh", authH.Refresh)
 			r.With(middleware.RequireUser(deps.Auth)).Post("/logout", authH.Logout)
+		})
+	}
+
+	if deps.Locations != nil {
+		locH := handlers.Locations{Logger: logger, Service: deps.Locations}
+		r.Get("/v1/locations", locH.List)
+	}
+	if deps.Photos != nil {
+		media := handlers.Media{Store: deps.Photos}
+		r.Get("/v1/media/photos/{name}", media.Photo)
+	}
+	if deps.Auth != nil && deps.Users != nil && deps.Vehicles != nil {
+		usersH := handlers.Users{Logger: logger, Service: deps.Users, MaxPhoto: deps.PhotoMax}
+		vehH := handlers.Vehicles{Logger: logger, Service: deps.Vehicles}
+		r.Route("/v1", func(r chi.Router) {
+			r.Use(middleware.RequireUser(deps.Auth))
+			r.Get("/me", usersH.Get)
+			r.Patch("/me", usersH.Patch)
+			r.Delete("/me", usersH.Delete)
+			r.Post("/me/photo", usersH.Photo)
+			r.Get("/users/{id}", usersH.Public)
+			r.Get("/me/vehicles", vehH.List)
+			r.Post("/me/vehicles", vehH.Create)
+			r.Patch("/me/vehicles/{id}", vehH.Patch)
+			r.Delete("/me/vehicles/{id}", vehH.Delete)
 		})
 	}
 

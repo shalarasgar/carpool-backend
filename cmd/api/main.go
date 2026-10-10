@@ -19,6 +19,7 @@ import (
 	"github.com/shalarasgar/carpool-backend/internal/ratelimit"
 	"github.com/shalarasgar/carpool-backend/internal/service"
 	"github.com/shalarasgar/carpool-backend/internal/sms"
+	"github.com/shalarasgar/carpool-backend/internal/storage"
 	"github.com/shalarasgar/carpool-backend/internal/store"
 )
 
@@ -93,12 +94,21 @@ func run() error {
 		MaxAttempts:  cfg.SMSMaxAttempts,
 		MaxBatch:     cfg.SMSGatewayMaxBatch,
 	}, logger)
+	photos, err := storage.NewLocal(cfg.PhotoDir, cfg.PhotoURLPrefix)
+	if err != nil {
+		return err
+	}
 
 	router := server.NewRouter(server.Deps{
 		Logger:     logger,
 		Health:     service.NewHealth(store.NewReadiness(pool), logger).WithGatewayWindow(cfg.SMSGatewayHealthyWindow),
 		Auth:       authSvc,
 		Gateway:    gatewaySvc,
+		Users:      service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: cfg.PhotoMaxBytes, AllowedTypes: cfg.PhotoAllowedTypes, PhoneHashKey: cfg.OTPHMACSecret}, logger),
+		Vehicles:   service.NewVehicles(pool, cfg.MaxVehiclesPerUser, logger),
+		Locations:  service.NewLocations(pool),
+		Photos:     photos,
+		PhotoMax:   cfg.PhotoMaxBytes,
 		AdminToken: cfg.AdminToken,
 		TrustProxy: cfg.TrustProxyHeaders,
 	})

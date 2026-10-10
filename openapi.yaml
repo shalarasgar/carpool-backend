@@ -1,13 +1,13 @@
 openapi: 3.0.3
 info:
   title: Carpool API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Backend for the Turkmenistan intercity carpool app.
 
-    Phase B: phone + OTP authentication, token refresh, the SMS gateway
-    contract for the Android sender app, and the admin endpoint that
-    registers gateways.
+    Phase C adds the caller's profile, vehicles, public profiles and the
+    location directory. Phase B remains: phone + OTP authentication, token
+    refresh, the SMS gateway contract, and gateway registration.
 
     **Localization.** Send `Accept-Language: tk`, `ru` or `en`. Error
     messages are localized; the default is `tk`. The response carries
@@ -24,6 +24,9 @@ servers:
 tags:
   - name: health
   - name: auth
+  - name: users
+  - name: vehicles
+  - name: locations
   - name: gateway
     description: "Called by the Android SMS gateway app. Authenticate with `Authorization: Bearer <api_key>`."
   - name: admin
@@ -186,12 +189,361 @@ paths:
     post:
       tags: [auth]
       summary: Sign out this device
-      description: Revokes every refresh token of the device encoded in the access token. The access token itself stays valid until it expires (15 minutes).
+      description: |
+        Revokes every refresh token of the device encoded in the access token.
+        The access token itself stays valid until it expires (15 minutes).
+        A blocked account is rejected with `403 USER_BLOCKED` and an anonymized
+        account with `401`, even when the JWT signature is still valid.
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
       responses:
         "204": { description: Signed out }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me:
+    get:
+      tags: [users]
+      summary: Caller's own profile
+      description: Includes the phone number. Other users never receive it.
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      tags: [users]
+      summary: Update name and locale
+      description: Send either field or both. Name is 1–80 characters (letters, spaces, hyphen, apostrophe, dot). Locale is `tk`, `ru` or `en`.
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, example: "Aýna Amanowa" }
+                locale: { type: string, enum: [tk, ru, en] }
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [users]
+      summary: Anonymize the account
+      description: |
+        Clears the name and photo, revokes every refresh token, and replaces
+        the phone with `anon:<hmac-sha256>:<user id>`. The cleartext number is
+        not kept, so the same phone can register a new empty account. The old
+        access token then returns `401`.
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      responses:
+        "204": { description: Anonymized }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/photo:
+    post:
+      tags: [users]
+      summary: Upload a profile photo
+      description: |
+        Multipart field name is `photo`. `PHOTO_MAX_BYTES` (default 2 MiB) and
+        `PHOTO_ALLOWED_TYPES` (jpeg, png, webp) come from config. The server
+        sniffs the bytes and ignores the part Content-Type, then re-encodes
+        the image so metadata is dropped. WebP is stored as JPEG, or as PNG
+        when the image has transparency. The file name is random. The returned
+        `photo_url` is a path such as `/v1/media/photos/<file>`.
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Profile with the new photo_url
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "`PHOTO_TOO_LARGE`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "`PHOTO_TYPE_UNSUPPORTED` or `VALIDATION_ERROR`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/media/photos/{name}:
+    get:
+      tags: [users]
+      summary: Fetch a profile photo
+      description: Public. `name` must be a generated 32-hex file name. No directory listing and no path traversal.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{32}\\.(jpg|png|webp)$" }
+      responses:
+        "200":
+          description: Image bytes
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/users/{id}:
+    get:
+      tags: [users]
+      summary: Public profile
+      description: |
+        Requires a JWT. The body is the public profile only: name, photo,
+        rating, the most recently created vehicle, and the number of completed
+        trips (driven, plus ridden with an approved booking). The phone number
+        is never included. An anonymized account is `404`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Public profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/vehicles:
+    get:
+      tags: [vehicles]
+      summary: List my vehicles
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      responses:
+        "200":
+          description: Vehicles, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vehicles]
+                properties:
+                  vehicles:
+                    type: array
+                    items: { $ref: "#/components/schemas/Vehicle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [vehicles]
+      summary: Add a vehicle
+      description: |
+        At most `MAX_VEHICLES_PER_USER` (default 3). Plate is uppercased and
+        must contain 4–10 letters and digits, with spaces or hyphens as
+        separators. A vehicle owned by someone else is `404`, the same as an
+        unknown id.
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [brand, model, color, plate]
+              properties:
+                brand: { type: string, example: Toyota }
+                model: { type: string, example: Camry }
+                color: { type: string, example: ak }
+                plate: { type: string, example: "AG 1234 AB" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vehicle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "`VALIDATION_ERROR` or `VEHICLE_LIMIT`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/vehicles/{id}:
+    patch:
+      tags: [vehicles]
+      summary: Update my vehicle
+      description: Omitted fields stay unchanged. Another user's vehicle is `404`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                brand: { type: string }
+                model: { type: string }
+                color: { type: string }
+                plate: { type: string }
+      responses:
+        "200":
+          description: Updated vehicle
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vehicle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [vehicles]
+      summary: Delete my vehicle
+      description: Another user's vehicle is `404`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/locations:
+    get:
+      tags: [locations]
+      summary: List locations
+      description: |
+        Public. `active_only` defaults to true. `name` follows `Accept-Language`
+        (`tk`, `ru`, `en`). `q` is a case-insensitive substring matched against
+        the Turkmen, Russian and English names. The response has an `ETag`;
+        send it back as `If-None-Match` to receive `304`. Send `Accept-Encoding: gzip`
+        to compress the body. `Cache-Control` is `public, max-age=300`.
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - name: type
+          in: query
+          schema: { type: string, enum: [welayat, city, etrap] }
+        - name: parent_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: active_only
+          in: query
+          schema: { type: boolean, default: true }
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching locations
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, example: "public, max-age=300" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LocationList" }
+        "304":
+          description: Not modified. Empty body; `ETag` is still set.
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /gateway/v1/pending:
     get:
@@ -406,6 +758,9 @@ components:
                 - INTERNAL
                 - SMS_NOT_FOUND
                 - GATEWAY_EXISTS
+                - PHOTO_TOO_LARGE
+                - PHOTO_TYPE_UNSUPPORTED
+                - VEHICLE_LIMIT
             message: { type: string, description: Localized per Accept-Language. }
             details:
               type: object
@@ -439,6 +794,59 @@ components:
         token_type: { type: string, example: Bearer }
         expires_in: { type: integer, description: Access token lifetime in seconds, example: 900 }
         refresh_token: { type: string, description: Opaque, valid for REFRESH_TOKEN_TTL (30d), single use. }
+
+    PublicProfile:
+      type: object
+      required: [id, name, photo_url, rating_avg, rating_count, vehicle, completed_trips]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        photo_url: { type: string, nullable: true }
+        rating_avg: { type: number, format: double }
+        rating_count: { type: integer }
+        vehicle:
+          nullable: true
+          allOf: [ { $ref: "#/components/schemas/PublicVehicle" } ]
+        completed_trips:
+          type: integer
+          description: Completed trips driven, plus completed trips ridden with an approved booking.
+
+    PublicVehicle:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        brand: { type: string }
+        model: { type: string }
+        color: { type: string }
+        plate: { type: string }
+
+    Vehicle:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        brand: { type: string }
+        model: { type: string }
+        color: { type: string }
+        plate: { type: string }
+        created_at: { type: string, format: date-time }
+
+    LocationList:
+      type: object
+      required: [locations]
+      properties:
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/Location" }
+
+    Location:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        parent_id: { type: string, format: uuid, nullable: true }
+        type: { type: string, enum: [welayat, city, etrap] }
+        name: { type: string, description: Localized from Accept-Language. }
+        is_active: { type: boolean }
+        sort_order: { type: integer }
 
     LoginResponse:
       allOf:

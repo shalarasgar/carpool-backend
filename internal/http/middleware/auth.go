@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -16,9 +17,11 @@ const (
 	gatewayKey  contextKey = 4
 )
 
-// AccessTokenVerifier validates a bearer access token.
+// AccessTokenVerifier validates a bearer access token and rejects accounts
+// that must not call authenticated routes (blocked or anonymized).
 type AccessTokenVerifier interface {
 	VerifyAccessToken(token string) (userID, deviceID string, err error)
+	AccountStatus(ctx context.Context, userID string) error
 }
 
 // GatewayAuthenticator resolves a gateway API key.
@@ -38,6 +41,10 @@ func RequireUser(verifier AccessTokenVerifier) func(http.Handler) http.Handler {
 			userID, deviceID, err := verifier.VerifyAccessToken(token)
 			if err != nil {
 				httperr.WriteCode(w, r, http.StatusUnauthorized, "UNAUTHORIZED")
+				return
+			}
+			if err := verifier.AccountStatus(r.Context(), userID); err != nil {
+				writeAccountError(w, r, err)
 				return
 			}
 			ctx := context.WithValue(r.Context(), userIDKey, userID)
@@ -102,6 +109,23 @@ func DeviceIDFrom(ctx context.Context) string {
 func GatewayFrom(ctx context.Context) (service.GatewayIdentity, bool) {
 	gw, ok := ctx.Value(gatewayKey).(service.GatewayIdentity)
 	return gw, ok
+}
+
+func writeAccountError(w http.ResponseWriter, r *http.Request, err error) {
+	switch service.CodeOf(err) {
+	case "USER_BLOCKED":
+		httperr.WriteCode(w, r, http.StatusForbidden, "USER_BLOCKED")
+	case "":
+		slog.Error("account status",
+			"request_id", RequestIDFrom(r.Context()),
+			"method", r.Method,
+			"path", r.URL.Path,
+			"err", err,
+		)
+		httperr.WriteCode(w, r, http.StatusInternalServerError, "INTERNAL")
+	default:
+		httperr.WriteCode(w, r, http.StatusUnauthorized, "UNAUTHORIZED")
+	}
 }
 
 func bearerToken(r *http.Request) (string, bool) {

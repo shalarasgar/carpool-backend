@@ -53,10 +53,14 @@ type Users struct {
 	logger   *slog.Logger
 }
 
-// NewUsers wires the profile service. photos may not be nil.
-func NewUsers(pool *pgxpool.Pool, photos storage.Store, cfg UserConfig, logger *slog.Logger) *Users {
+// NewUsers wires the profile service. photos may not be nil. notifier may be
+// nil, which discards the events account deletion would otherwise store.
+func NewUsers(pool *pgxpool.Pool, photos storage.Store, cfg UserConfig, notifier notify.Notifier, logger *slog.Logger) *Users {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if notifier == nil {
+		notifier = notify.Nop{Logger: logger}
 	}
 	allowed := make(map[string]struct{}, len(cfg.AllowedTypes))
 	for _, kind := range cfg.AllowedTypes {
@@ -64,7 +68,7 @@ func NewUsers(pool *pgxpool.Pool, photos storage.Store, cfg UserConfig, logger *
 	}
 	return &Users{
 		pool: pool, q: store.New(pool), photos: photos, cfg: cfg, allowed: allowed,
-		notifier: notify.Nop{Logger: logger}, logger: logger,
+		notifier: notifier, logger: logger,
 	}
 }
 
@@ -204,17 +208,15 @@ func (s *Users) Anonymize(ctx context.Context, userID string) error {
 		if user.PhotoUrl.Valid {
 			oldPhoto = user.PhotoUrl.String
 		}
+		if err := s.notifier.Notify(store.WithQueries(ctx, q), events...); err != nil {
+			return fmt.Errorf("notify: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 	s.deleteStoredPhoto(ctx, userID, oldPhoto)
-	if s.notifier != nil && len(events) > 0 {
-		if err := s.notifier.Notify(ctx, events...); err != nil {
-			s.logger.Error("notify failed", "user_id", userID, "err", err)
-		}
-	}
 	s.logger.Info("user anonymized", "user_id", userID)
 	return nil
 }

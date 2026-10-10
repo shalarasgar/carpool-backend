@@ -98,7 +98,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 		version = next
 	}
 
-	want := []uint{1, 2, 3, 4, 5}
+	want := []uint{1, 2, 3, 4, 5, 6}
 	if !reflect.DeepEqual(versions, want) {
 		t.Fatalf("versions = %v, want %v", versions, want)
 	}

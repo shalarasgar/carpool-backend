@@ -121,3 +121,35 @@ WHERE b.passenger_id = sqlc.arg(passenger_id)
 ORDER BY b.created_at DESC, b.id DESC
 LIMIT sqlc.arg(page_limit)::int
 OFFSET sqlc.arg(page_offset)::int;
+
+-- name: GetApprovedBookingForPassenger :one
+SELECT *
+FROM bookings
+WHERE trip_id = $1
+  AND passenger_id = $2
+  AND status = 'approved'
+FOR UPDATE;
+
+-- Pending bookings whose trip has already departed become cancelled_by_driver.
+-- The driver never decided, so the row is not rejected. The passenger is
+-- notified in the same statement. Approved bookings are left as they are.
+-- name: CancelStalePendingBookings :execrows
+WITH cancelled AS (
+    UPDATE bookings AS b
+    SET status = 'cancelled_by_driver'
+    FROM trips AS t
+    WHERE b.trip_id = t.id
+      AND b.status = 'pending'
+      AND t.departs_at <= now()
+    RETURNING b.id, b.trip_id, b.passenger_id, t.driver_id
+)
+INSERT INTO notifications (user_id, type, payload)
+SELECT
+    c.passenger_id,
+    'booking_cancelled',
+    jsonb_build_object(
+        'actor_id', c.driver_id,
+        'trip_id', c.trip_id,
+        'booking_id', c.id
+    )
+FROM cancelled AS c;

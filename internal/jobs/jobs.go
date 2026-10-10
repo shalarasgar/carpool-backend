@@ -26,6 +26,9 @@ type Config struct {
 	OTPRetention time.Duration
 	// RevokedTokenRetention keeps revoked refresh tokens so reuse is detected.
 	RevokedTokenRetention time.Duration
+	// NotificationReadRetention deletes read inbox rows older than this.
+	// Unread rows are kept.
+	NotificationReadRetention time.Duration
 }
 
 // Runner executes the maintenance queries.
@@ -53,6 +56,9 @@ func New(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) *Runner {
 	if cfg.RevokedTokenRetention <= 0 {
 		cfg.RevokedTokenRetention = 7 * 24 * time.Hour
 	}
+	if cfg.NotificationReadRetention <= 0 {
+		cfg.NotificationReadRetention = 30 * 24 * time.Hour
+	}
 	return &Runner{q: store.New(pool), cfg: cfg, logger: logger, now: time.Now}
 }
 
@@ -73,13 +79,15 @@ func (r *Runner) Run(ctx context.Context) {
 
 // Stats counts what one run changed.
 type Stats struct {
-	RequeuedSMS       int64
-	UnassignedSMS     int64
-	DeletedOTPs       int64
-	DeletedRefresh    int64
-	CompletedTrips    int64
-	ExpiredTrips      int64
-	InconsistentTrips int64
+	RequeuedSMS          int64
+	UnassignedSMS        int64
+	DeletedOTPs          int64
+	DeletedRefresh       int64
+	CompletedTrips       int64
+	ExpiredTrips         int64
+	InconsistentTrips    int64
+	CancelledPending     int64
+	DeletedNotifications int64
 }
 
 // RunOnce executes every maintenance query once. Each query is independent;
@@ -106,9 +114,11 @@ func (r *Runner) RunOnce(ctx context.Context) (Stats, error) {
 	}
 	// Past active/full trips with a consistent approved-seat total become
 	// completed. Past active/full trips with no approved booking become
-	// expired. Booking rows are not modified. A past trip that has approved
-	// bookings but whose seats_left does not equal seats_total minus those
-	// seats is left unchanged and counted here.
+	// expired. A past trip that has approved bookings but whose seats_left
+	// does not equal seats_total minus those seats is left unchanged and
+	// counted here. Pending bookings on any trip that has already departed
+	// become cancelled_by_driver (the driver never decided, so they are not
+	// rejected) and the passenger is notified in that same statement.
 	if s.CompletedTrips, err = r.q.CompleteConsistentPastTrips(ctx); err != nil {
 		return s, fmt.Errorf("complete past trips: %w", err)
 	}
@@ -122,6 +132,13 @@ func (r *Runner) RunOnce(ctx context.Context) (Stats, error) {
 	s.InconsistentTrips = int64(inconsistent)
 	if inconsistent > 0 {
 		r.logger.Warn("past trips left unchanged because approved seats do not match seats_left", "trips", inconsistent)
+	}
+	if s.CancelledPending, err = r.q.CancelStalePendingBookings(ctx); err != nil {
+		return s, fmt.Errorf("cancel stale pending bookings: %w", err)
+	}
+	readBefore := pgtype.Timestamptz{Time: now.Add(-r.cfg.NotificationReadRetention), Valid: true}
+	if s.DeletedNotifications, err = r.q.DeleteOldReadNotifications(ctx, readBefore); err != nil {
+		return s, fmt.Errorf("delete old notifications: %w", err)
 	}
 	return s, nil
 }
@@ -145,6 +162,8 @@ func (r *Runner) runLogged(ctx context.Context) {
 			"completed_trips", stats.CompletedTrips,
 			"expired_trips", stats.ExpiredTrips,
 			"inconsistent_trips", stats.InconsistentTrips,
+			"cancelled_pending_bookings", stats.CancelledPending,
+			"deleted_notifications", stats.DeletedNotifications,
 		)
 	}
 }

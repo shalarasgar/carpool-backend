@@ -218,6 +218,15 @@ type Location struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type Notification struct {
+	ID        pgtype.UUID
+	UserID    pgtype.UUID
+	Type      string
+	Payload   []byte
+	ReadAt    pgtype.Timestamptz
+	CreatedAt pgtype.Timestamptz
+}
+
 type OtpCode struct {
 	ID        pgtype.UUID
 	Phone     string

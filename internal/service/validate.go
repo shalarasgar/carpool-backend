@@ -9,6 +9,16 @@ import (
 	"github.com/shalarasgar/carpool-backend/internal/i18n"
 )
 
+// parseFieldUUID validates a UUID that arrived in a JSON body. A bad value is
+// a validation error naming the field, not a missing resource.
+func parseFieldUUID(raw, field string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(strings.TrimSpace(raw)); err != nil || !id.Valid {
+		return pgtype.UUID{}, validationError(map[string]string{field: "uuid"})
+	}
+	return id, nil
+}
+
 func parseUUID(s string) (pgtype.UUID, error) {
 	var id pgtype.UUID
 	if err := id.Scan(strings.TrimSpace(s)); err != nil || !id.Valid {

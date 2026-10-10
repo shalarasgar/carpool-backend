@@ -366,8 +366,8 @@ func (s *Trips) Cancel(ctx context.Context, driverID, tripID, locale string) (Tr
 	if err != nil {
 		return Trip{}, ErrTripNotFound
 	}
-	var events []notify.Event
 	err = store.RunInTx(ctx, s.pool, func(q *store.Queries) error {
+		var events []notify.Event
 		if err := requireActiveUser(ctx, q, driver); err != nil {
 			return err
 		}
@@ -406,13 +406,12 @@ func (s *Trips) Cancel(ctx context.Context, driverID, tripID, locale string) (Tr
 				BookingID:   booking.ID.String(),
 			})
 		}
-		return nil
+		return s.notify(ctx, q, events)
 	})
 	if err != nil {
 		return Trip{}, err
 	}
-	s.notify(ctx, events)
-	s.logger.Info("trip cancelled", "user_id", driverID, "trip_id", tripID, "bookings", len(events))
+	s.logger.Info("trip cancelled", "user_id", driverID, "trip_id", tripID)
 	return loadTrip(ctx, s.q, id, localeOrDefault(locale))
 }
 

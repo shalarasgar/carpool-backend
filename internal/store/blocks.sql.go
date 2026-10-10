@@ -31,3 +31,110 @@ func (q *Queries) BlockExistsEitherWay(ctx context.Context, arg BlockExistsEithe
 	err := row.Scan(&blocked)
 	return blocked, err
 }
+
+const deleteUserBlock = `-- name: DeleteUserBlock :execrows
+DELETE FROM user_blocks
+WHERE blocker_id = $1 AND blocked_id = $2
+`
+
+type DeleteUserBlockParams struct {
+	BlockerID pgtype.UUID
+	BlockedID pgtype.UUID
+}
+
+func (q *Queries) DeleteUserBlock(ctx context.Context, arg DeleteUserBlockParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserBlock, arg.BlockerID, arg.BlockedID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getUserBlock = `-- name: GetUserBlock :one
+SELECT blocker_id, blocked_id, created_at
+FROM user_blocks
+WHERE blocker_id = $1 AND blocked_id = $2
+`
+
+type GetUserBlockParams struct {
+	BlockerID pgtype.UUID
+	BlockedID pgtype.UUID
+}
+
+func (q *Queries) GetUserBlock(ctx context.Context, arg GetUserBlockParams) (UserBlock, error) {
+	row := q.db.QueryRow(ctx, getUserBlock, arg.BlockerID, arg.BlockedID)
+	var i UserBlock
+	err := row.Scan(&i.BlockerID, &i.BlockedID, &i.CreatedAt)
+	return i, err
+}
+
+const insertUserBlock = `-- name: InsertUserBlock :execrows
+INSERT INTO user_blocks (blocker_id, blocked_id)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type InsertUserBlockParams struct {
+	BlockerID pgtype.UUID
+	BlockedID pgtype.UUID
+}
+
+func (q *Queries) InsertUserBlock(ctx context.Context, arg InsertUserBlockParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertUserBlock, arg.BlockerID, arg.BlockedID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listBlocksByBlocker = `-- name: ListBlocksByBlocker :many
+SELECT
+    ub.blocked_id,
+    ub.created_at,
+    u.name,
+    u.photo_url
+FROM user_blocks ub
+JOIN users u ON u.id = ub.blocked_id
+WHERE ub.blocker_id = $1
+ORDER BY ub.created_at DESC, ub.blocked_id DESC
+LIMIT $3
+OFFSET $2
+`
+
+type ListBlocksByBlockerParams struct {
+	BlockerID  pgtype.UUID
+	PageOffset int32
+	PageLimit  int32
+}
+
+type ListBlocksByBlockerRow struct {
+	BlockedID pgtype.UUID
+	CreatedAt pgtype.Timestamptz
+	Name      string
+	PhotoUrl  pgtype.Text
+}
+
+func (q *Queries) ListBlocksByBlocker(ctx context.Context, arg ListBlocksByBlockerParams) ([]ListBlocksByBlockerRow, error) {
+	rows, err := q.db.Query(ctx, listBlocksByBlocker, arg.BlockerID, arg.PageOffset, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBlocksByBlockerRow
+	for rows.Next() {
+		var i ListBlocksByBlockerRow
+		if err := rows.Scan(
+			&i.BlockedID,
+			&i.CreatedAt,
+			&i.Name,
+			&i.PhotoUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

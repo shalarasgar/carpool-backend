@@ -41,7 +41,6 @@ func (s *Bookings) Create(ctx context.Context, passengerID, tripID string, seats
 		return Booking{}, ErrTripNotFound
 	}
 	var created store.Booking
-	var driver pgtype.UUID
 	err = store.RunInTx(ctx, s.pool, func(q *store.Queries) error {
 		if err := requireActiveUser(ctx, q, passenger); err != nil {
 			return err
@@ -77,19 +76,17 @@ func (s *Bookings) Create(ctx context.Context, passengerID, tripID string, seats
 		if err != nil {
 			return fmt.Errorf("create booking: %w", err)
 		}
-		driver = trip.DriverID
-		return nil
+		return s.notify(ctx, q, []notify.Event{{
+			Kind:        notify.KindBookingRequested,
+			RecipientID: trip.DriverID.String(),
+			ActorID:     passenger.String(),
+			TripID:      id.String(),
+			BookingID:   created.ID.String(),
+		}})
 	})
 	if err != nil {
 		return Booking{}, err
 	}
-	s.notify(ctx, []notify.Event{{
-		Kind:        notify.KindBookingRequested,
-		RecipientID: driver.String(),
-		ActorID:     passenger.String(),
-		TripID:      id.String(),
-		BookingID:   created.ID.String(),
-	}})
 	s.logger.Info("booking requested", "user_id", passengerID, "trip_id", tripID, "booking_id", created.ID.String())
 	return s.present(ctx, created.ID, passengerID)
 }
@@ -220,8 +217,8 @@ func (s *Bookings) decide(ctx context.Context, callerID, bookingID string, kind 
 	if err != nil {
 		return Booking{}, ErrBookingNotFound
 	}
-	var events []notify.Event
 	err = store.RunInTx(ctx, s.pool, func(q *store.Queries) error {
+		var events []notify.Event
 		if err := requireActiveUser(ctx, q, caller); err != nil {
 			return err
 		}
@@ -350,12 +347,11 @@ func (s *Bookings) decide(ctx context.Context, callerID, bookingID string, kind 
 				BookingID:   booking.ID.String(),
 			}}
 		}
-		return nil
+		return s.notify(ctx, q, events)
 	})
 	if err != nil {
 		return Booking{}, err
 	}
-	s.notify(ctx, events)
 	s.logger.Info("booking decision", "user_id", callerID, "booking_id", bookingID, "decision", string(kind))
 	return s.present(ctx, id, callerID)
 }

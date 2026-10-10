@@ -17,19 +17,24 @@ import (
 // Locations may be nil in tests that only exercise health routes; their
 // routes are then skipped.
 type Deps struct {
-	Logger     *slog.Logger
-	Health     *service.Health
-	Auth       *service.Auth
-	Gateway    *service.Gateway
-	Users      *service.Users
-	Vehicles   *service.Vehicles
-	Locations  *service.Locations
-	Trips      *service.Trips
-	Bookings   *service.Bookings
-	Photos     storage.Store
-	PhotoMax   int64
-	AdminToken string
-	TrustProxy bool
+	Logger        *slog.Logger
+	Health        *service.Health
+	Auth          *service.Auth
+	Gateway       *service.Gateway
+	Users         *service.Users
+	Vehicles      *service.Vehicles
+	Locations     *service.Locations
+	Trips         *service.Trips
+	Bookings      *service.Bookings
+	Reviews       *service.Reviews
+	Blocks        *service.Blocks
+	Reports       *service.Reports
+	Notifications *service.Notifications
+	Admin         *service.Admin
+	Photos        storage.Store
+	PhotoMax      int64
+	AdminToken    string
+	TrustProxy    bool
 }
 
 // NewRouter returns the application router.
@@ -105,6 +110,26 @@ func NewRouter(deps Deps) http.Handler {
 				r.Post("/bookings/{id}/reject", bookH.Reject)
 				r.Post("/bookings/{id}/cancel", bookH.Cancel)
 			}
+			if deps.Reviews != nil {
+				revH := handlers.Reviews{Logger: logger, Service: deps.Reviews}
+				r.Post("/trips/{id}/reviews", revH.Create)
+				r.Get("/users/{id}/reviews", revH.List)
+			}
+			if deps.Blocks != nil {
+				blockH := handlers.Blocks{Logger: logger, Service: deps.Blocks}
+				r.Get("/me/blocks", blockH.List)
+				r.Post("/users/{id}/block", blockH.Create)
+				r.Delete("/users/{id}/block", blockH.Delete)
+			}
+			if deps.Reports != nil {
+				reportH := handlers.Reports{Logger: logger, Service: deps.Reports}
+				r.Post("/reports", reportH.Create)
+			}
+			if deps.Notifications != nil {
+				noteH := handlers.Notifications{Logger: logger, Service: deps.Notifications}
+				r.Get("/me/notifications", noteH.List)
+				r.Post("/me/notifications/read", noteH.Read)
+			}
 		})
 	}
 
@@ -119,6 +144,16 @@ func NewRouter(deps Deps) http.Handler {
 		r.Route("/admin/v1", func(r chi.Router) {
 			r.Use(middleware.RequireAdmin(deps.AdminToken))
 			r.Post("/gateways", gwH.Create)
+			if deps.Admin != nil {
+				adminH := handlers.Admin{Logger: logger, Service: deps.Admin}
+				r.Get("/gateways", adminH.Gateways)
+				r.Get("/sms/stats", adminH.SMSStats)
+				r.Get("/reports", adminH.Reports)
+				r.Patch("/reports/{id}", adminH.UpdateReport)
+				r.Post("/users/{id}/block", adminH.BlockUser)
+				r.Delete("/users/{id}/block", adminH.UnblockUser)
+				r.Patch("/locations/{id}", adminH.SetLocation)
+			}
 		})
 	}
 	return r

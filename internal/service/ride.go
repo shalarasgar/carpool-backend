@@ -49,13 +49,17 @@ func (r rideDB) clock() time.Time {
 	return r.now()
 }
 
-func (r rideDB) notify(ctx context.Context, events []notify.Event) {
+// notify writes inbox rows on the transaction in q. An error aborts that
+// transaction so a booking change is never committed without its notification,
+// and a rolled-back change never leaves one behind.
+func (r rideDB) notify(ctx context.Context, q *store.Queries, events []notify.Event) error {
 	if r.notifier == nil || len(events) == 0 {
-		return
+		return nil
 	}
-	if err := r.notifier.Notify(ctx, events...); err != nil {
-		r.logger.Error("notify failed", "err", err)
+	if err := r.notifier.Notify(store.WithQueries(ctx, q), events...); err != nil {
+		return fmt.Errorf("notify: %w", err)
 	}
+	return nil
 }
 
 // requireActiveUser locks the user row. Deleted and blocked accounts cannot

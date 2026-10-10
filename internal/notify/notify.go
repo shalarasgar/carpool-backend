@@ -1,6 +1,7 @@
-// Package notify is the outbound notification port. Phase D calls it when a
-// booking or trip changes. The inbox table and any push or SMS delivery
-// arrive in Phase E; Nop is the stand-in until then.
+// Package notify is the outbound notification port. Inbox writes the in-app
+// inbox inside the caller's transaction. Nop discards events and remains for
+// tests that do not assert on the inbox. Push and SMS delivery are not part
+// of this package.
 package notify
 
 import (
@@ -30,8 +31,8 @@ type Event struct {
 }
 
 // Notifier delivers events. Implementations must be safe for concurrent use.
-// A failure must not be required for the booking change to stay committed;
-// callers log and continue.
+// Inbox requires store.WithQueries so the insert commits or rolls back with
+// the booking or trip change. A Notify error must abort that transaction.
 type Notifier interface {
 	Notify(ctx context.Context, events ...Event) error
 }

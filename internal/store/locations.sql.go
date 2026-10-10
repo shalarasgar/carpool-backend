@@ -89,3 +89,42 @@ func (q *Queries) ListLocations(ctx context.Context) ([]ListLocationsRow, error)
 	}
 	return items, nil
 }
+
+const setLocationActive = `-- name: SetLocationActive :one
+UPDATE locations
+SET is_active = $2
+WHERE id = $1
+RETURNING id, parent_id, type, name_tk, name_ru, name_en, is_active, sort_order
+`
+
+type SetLocationActiveParams struct {
+	ID       pgtype.UUID
+	IsActive bool
+}
+
+type SetLocationActiveRow struct {
+	ID        pgtype.UUID
+	ParentID  pgtype.UUID
+	Type      LocationType
+	NameTk    string
+	NameRu    string
+	NameEn    string
+	IsActive  bool
+	SortOrder int32
+}
+
+func (q *Queries) SetLocationActive(ctx context.Context, arg SetLocationActiveParams) (SetLocationActiveRow, error) {
+	row := q.db.QueryRow(ctx, setLocationActive, arg.ID, arg.IsActive)
+	var i SetLocationActiveRow
+	err := row.Scan(
+		&i.ID,
+		&i.ParentID,
+		&i.Type,
+		&i.NameTk,
+		&i.NameRu,
+		&i.NameEn,
+		&i.IsActive,
+		&i.SortOrder,
+	)
+	return i, err
+}

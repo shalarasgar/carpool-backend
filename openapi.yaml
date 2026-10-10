@@ -640,6 +640,36 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /admin/v1/gateways:
+    get:
+      tags: [admin]
+      summary: List SMS gateways and health
+      description: |
+        Each gateway is healthy when it is active and heartbeated within
+        `SMS_GATEWAY_HEALTHY_WINDOW`. The API key and its hash are not returned.
+      security: [ { adminToken: [] } ]
+      responses:
+        "200":
+          description: Gateways
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [gateways]
+                properties:
+                  gateways:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, is_active, healthy, operator_prefixes, created_at]
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+                        is_active: { type: boolean }
+                        healthy: { type: boolean }
+                        last_heartbeat_at: { type: string, format: date-time, nullable: true }
+                        operator_prefixes: { type: array, items: { type: string } }
+                        created_at: { type: string, format: date-time }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [admin]
       summary: Register an SMS gateway
@@ -1082,6 +1112,396 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/trips/{id}/reviews:
+    post:
+      tags: [reviews]
+      summary: Review a participant of a completed trip
+      description: |
+        The reviewer and `to_user_id` must be the driver and a passenger with an
+        approved booking, in either direction. Passengers cannot review each
+        other. One review per direction. The trip must be `completed` and
+        `departs_at` must be within `REVIEW_WINDOW` (default 14 days). The
+        recipient's `rating_avg` and `rating_count` update in the same
+        transaction. The response has no phone number.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_user_id, rating]
+              properties:
+                to_user_id: { type: string, format: uuid }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Review stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Review" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`TRIP_NOT_FOUND` or the recipient does not exist"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`INVALID_STATE`, `REVIEW_EXISTS`, or `REVIEW_WINDOW_CLOSED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/users/{id}/reviews:
+    get:
+      tags: [reviews]
+      summary: List reviews about a user
+      description: |
+        Newest first. Page defaults are the same as trip search. Reviewer phone
+        numbers are not included. A missing or deleted user is `404`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Reviews
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/users/{id}/block:
+    post:
+      tags: [safety]
+      summary: Block a user
+      description: |
+        Idempotent. `201` when the block is new, `200` when it already existed.
+        A block hides trips from search in both directions and rejects a new
+        booking or approval of a still-pending request. An already approved
+        booking is left as it is. Blocking yourself is `403`.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The block already existed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Block" }
+        "201":
+          description: Block created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Block" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [safety]
+      summary: Remove a block
+      description: Idempotent. `204` whether or not the block existed.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Block removed }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND` when the id is not a UUID"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/blocks:
+    get:
+      tags: [safety]
+      summary: List users the caller has blocked
+      description: Newest first. Phone numbers are not included.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Blocks
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/reports:
+    post:
+      tags: [safety]
+      summary: Report a user
+      description: |
+        Rate limited per user (`REPORT_USER_LIMIT` per `REPORT_USER_WINDOW`,
+        default 10 per 24 hours). Reporting yourself is `403`. `trip_id` is
+        optional and must refer to an existing trip.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reported_user_id, reason]
+              properties:
+                reported_user_id: { type: string, format: uuid }
+                trip_id: { type: string, format: uuid }
+                reason:
+                  type: string
+                  enum: [spam, harassment, scam, unsafe_driving, no_show, other]
+                details: { type: string, maxLength: 1000 }
+      responses:
+        "201":
+          description: Report filed with status `open`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND` when the reported user does not exist"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/me/notifications:
+    get:
+      tags: [notifications]
+      summary: List the caller's inbox
+      description: |
+        Cursor pagination, newest first. `limit` defaults to 20 and cannot
+        exceed 50. `unread_count` is the total unread rows, not the page size.
+        `title` and `body` are localized from the recipient's saved `locale`,
+        not from `Accept-Language`. Payload contains only `actor_id`, `trip_id`,
+        and `booking_id`. Phone numbers are never stored.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Inbox page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/me/notifications/read:
+    post:
+      tags: [notifications]
+      summary: Mark inbox rows read
+      description: |
+        Send `{"all": true}` or `{"ids": ["..."]}`. Ids that are not the
+        caller's unread rows are ignored. The response is the remaining unread count.
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/AcceptLanguage" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                all: { type: boolean }
+                ids: { type: array, items: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Remaining unread count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unread_count]
+                properties:
+                  unread_count: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /admin/v1/reports:
+    get:
+      tags: [admin]
+      summary: List reports
+      description: Optional `status` is `open`, `reviewing`, `resolved`, or `dismissed`. Newest first.
+      security: [ { adminToken: [] } ]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, reviewing, resolved, dismissed] } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Reports
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportPage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /admin/v1/reports/{id}:
+    patch:
+      tags: [admin]
+      summary: Update a report's status
+      security: [ { adminToken: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [open, reviewing, resolved, dismissed] }
+      responses:
+        "200":
+          description: Updated report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /admin/v1/users/{id}/block:
+    post:
+      tags: [admin]
+      summary: Block a user
+      description: |
+        Sets `is_blocked`, revokes every refresh token, and runs the account-deletion
+        cascade (cancels active and full trips and their live bookings, cancels the
+        user's live bookings on other trips, deletes vehicles) without anonymizing
+        the profile. Unblocking does not restore any of that.
+      security: [ { adminToken: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: User is blocked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserModeration" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [admin]
+      summary: Unblock a user
+      description: Clears `is_blocked`. Trips, bookings, vehicles, and refresh tokens are not restored.
+      security: [ { adminToken: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: User is not blocked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserModeration" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/v1/locations/{id}:
+    patch:
+      tags: [admin]
+      summary: Activate or deactivate a location
+      description: |
+        Only `is_active` changes. Existing trips keep their location ids.
+        New trips cannot use an inactive location. Search already skips inactive endpoints.
+      security: [ { adminToken: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_active]
+              properties:
+                is_active: { type: boolean }
+      responses:
+        "200":
+          description: Updated location
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, type, is_active]
+                properties:
+                  id: { type: string, format: uuid }
+                  type: { type: string, enum: [welayat, city, etrap] }
+                  is_active: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /admin/v1/sms/stats:
+    get:
+      tags: [admin]
+      summary: SMS queue counts
+      security: [ { adminToken: [] } ]
+      responses:
+        "200":
+          description: Counts by status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pending, processing, sent, failed]
+                properties:
+                  pending: { type: integer }
+                  processing: { type: integer }
+                  sent: { type: integer }
+                  failed: { type: integer }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1380,3 +1800,111 @@ components:
         phone:
           type: string
           description: Present only for the driver, and only when the booking is approved.
+
+    ReviewPage:
+      type: object
+      required: [reviews, page, page_size, has_more]
+      properties:
+        reviews:
+          type: array
+          items: { $ref: "#/components/schemas/Review" }
+        page: { type: integer }
+        page_size: { type: integer }
+        has_more: { type: boolean }
+
+    Review:
+      type: object
+      description: A review never includes a phone number.
+      required: [id, trip_id, from_user, to_user_id, rating, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        trip_id: { type: string, format: uuid }
+        from_user:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            photo_url: { type: string, nullable: true }
+        to_user_id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    BlockPage:
+      type: object
+      required: [blocks, page, page_size, has_more]
+      properties:
+        blocks:
+          type: array
+          items: { $ref: "#/components/schemas/Block" }
+        page: { type: integer }
+        page_size: { type: integer }
+        has_more: { type: boolean }
+
+    Block:
+      type: object
+      description: A blocked user. No phone number.
+      required: [user_id, name, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        photo_url: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ReportPage:
+      type: object
+      required: [reports, page, page_size, has_more]
+      properties:
+        reports:
+          type: array
+          items: { $ref: "#/components/schemas/Report" }
+        page: { type: integer }
+        page_size: { type: integer }
+        has_more: { type: boolean }
+
+    Report:
+      type: object
+      required: [id, reporter_id, reported_user_id, reason, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        reporter_id: { type: string, format: uuid }
+        reported_user_id: { type: string, format: uuid }
+        trip_id: { type: string, format: uuid, nullable: true }
+        reason: { type: string, enum: [spam, harassment, scam, unsafe_driving, no_show, other] }
+        details: { type: string, nullable: true }
+        status: { type: string, enum: [open, reviewing, resolved, dismissed] }
+        created_at: { type: string, format: date-time }
+
+    NotificationPage:
+      type: object
+      required: [notifications, unread_count]
+      properties:
+        notifications:
+          type: array
+          items: { $ref: "#/components/schemas/Notification" }
+        unread_count: { type: integer }
+        next_cursor: { type: string }
+
+    Notification:
+      type: object
+      required: [id, type, title, body, payload, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [booking_requested, booking_approved, booking_rejected, booking_cancelled, trip_cancelled]
+        title: { type: string }
+        body: { type: string }
+        payload:
+          type: object
+          additionalProperties: { type: string }
+          description: Only actor_id, trip_id, and booking_id. Never a phone number.
+        read_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    UserModeration:
+      type: object
+      required: [id, is_blocked]
+      properties:
+        id: { type: string, format: uuid }
+        is_blocked: { type: boolean }

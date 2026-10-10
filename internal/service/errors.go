@@ -45,6 +45,8 @@ var (
 	ErrBookingNotFound      = &Error{Code: "BOOKING_NOT_FOUND"}
 	ErrInvalidState         = &Error{Code: "INVALID_STATE"}
 	ErrBookingExists        = &Error{Code: "BOOKING_EXISTS"}
+	ErrReviewExists         = &Error{Code: "REVIEW_EXISTS"}
+	ErrReviewWindowClosed   = &Error{Code: "REVIEW_WINDOW_CLOSED"}
 	errUserNotFoundInternal = errors.New("user not found")
 )
 

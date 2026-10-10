@@ -31,6 +31,26 @@ UPDATE users
 SET name = '', photo_url = NULL, phone = $2, deleted_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: SetUserBlocked :execrows
+UPDATE users
+SET is_blocked = $2
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- Recompute from this user's reviews so parallel ratings of the same person
+-- stay exact. The caller inserts the new review first and already holds the
+-- user row lock, so the two updates cannot interleave.
+-- name: AddUserRating :one
+UPDATE users AS u
+SET
+    rating_count = (
+        SELECT count(*)::int FROM reviews AS r WHERE r.to_user_id = u.id
+    ),
+    rating_avg = (
+        SELECT round(avg(r.rating)::numeric, 2) FROM reviews AS r WHERE r.to_user_id = u.id
+    )
+WHERE u.id = $1
+RETURNING rating_avg, rating_count;
+
 -- name: CountCompletedTripsAsDriver :one
 SELECT count(*)::int AS completed_trips
 FROM trips

@@ -104,5 +104,18 @@ WHERE status = 'pending'
          OR last_heartbeat_at < sqlc.arg(stale_before)
   );
 
+-- name: ListSMSGateways :many
+SELECT id, name, last_heartbeat_at, is_active, operator_prefixes, created_at
+FROM sms_gateways
+ORDER BY created_at ASC, id ASC;
+
+-- name: SMSQueueStats :one
+SELECT
+    count(*) FILTER (WHERE status = 'pending')::int AS pending,
+    count(*) FILTER (WHERE status = 'processing')::int AS processing,
+    count(*) FILTER (WHERE status = 'sent')::int AS sent,
+    count(*) FILTER (WHERE status = 'failed')::int AS failed
+FROM sms_queue;
+
 -- name: GetSMSByID :one
 SELECT * FROM sms_queue WHERE id = $1;

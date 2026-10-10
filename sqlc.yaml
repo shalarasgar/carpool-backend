@@ -6,6 +6,7 @@ sql:
       - migrations/000001_init_schema.up.sql
       - migrations/000004_users_anonymize.up.sql
       - migrations/000005_trip_status_expired.up.sql
+      - migrations/000006_notifications_and_report_checks.up.sql
     gen:
       go:
         package: store

@@ -69,13 +69,15 @@ func run() error {
 		provider = sms.NewQueueProvider(pool, cfg.SMSGatewayHealthyWindow, logger)
 	}
 
+	limiter := ratelimit.NewMemory()
+	notifier := notify.Inbox{}
 	authSvc := service.NewAuth(
 		pool,
 		auth.NewPhoneNormalizer(cfg.AllowedPhonePrefixes),
 		auth.NewOTP(cfg.OTPHMACSecret, cfg.OTPMaxAttempts),
 		auth.NewJWT(cfg.JWTSecret, cfg.AppName, cfg.AccessTokenTTL),
 		provider,
-		ratelimit.NewMemory(),
+		limiter,
 		service.AuthConfig{
 			AppName:         cfg.AppName,
 			DevMode:         cfg.DevMode,
@@ -99,22 +101,25 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	notifier := notify.Nop{Logger: logger}
-
 	router := server.NewRouter(server.Deps{
-		Logger:     logger,
-		Health:     service.NewHealth(store.NewReadiness(pool), logger).WithGatewayWindow(cfg.SMSGatewayHealthyWindow),
-		Auth:       authSvc,
-		Gateway:    gatewaySvc,
-		Users:      service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: cfg.PhotoMaxBytes, AllowedTypes: cfg.PhotoAllowedTypes, PhoneHashKey: cfg.OTPHMACSecret}, logger),
-		Vehicles:   service.NewVehicles(pool, cfg.MaxVehiclesPerUser, logger),
-		Locations:  service.NewLocations(pool),
-		Trips:      service.NewTrips(pool, notifier, logger),
-		Bookings:   service.NewBookings(pool, notifier, logger),
-		Photos:     photos,
-		PhotoMax:   cfg.PhotoMaxBytes,
-		AdminToken: cfg.AdminToken,
-		TrustProxy: cfg.TrustProxyHeaders,
+		Logger:        logger,
+		Health:        service.NewHealth(store.NewReadiness(pool), logger).WithGatewayWindow(cfg.SMSGatewayHealthyWindow),
+		Auth:          authSvc,
+		Gateway:       gatewaySvc,
+		Users:         service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: cfg.PhotoMaxBytes, AllowedTypes: cfg.PhotoAllowedTypes, PhoneHashKey: cfg.OTPHMACSecret}, notifier, logger),
+		Vehicles:      service.NewVehicles(pool, cfg.MaxVehiclesPerUser, logger),
+		Locations:     service.NewLocations(pool),
+		Trips:         service.NewTrips(pool, notifier, logger),
+		Bookings:      service.NewBookings(pool, notifier, logger),
+		Reviews:       service.NewReviews(pool, service.ReviewConfig{Window: cfg.ReviewWindow}, logger),
+		Blocks:        service.NewBlocks(pool, logger),
+		Reports:       service.NewReports(pool, limiter, service.ReportConfig{Limit: cfg.ReportUserLimit, Window: cfg.ReportUserWindow}, logger),
+		Notifications: service.NewNotifications(pool),
+		Admin:         service.NewAdmin(pool, notifier, service.AdminConfig{GatewayHealthyWindow: cfg.SMSGatewayHealthyWindow}, logger),
+		Photos:        photos,
+		PhotoMax:      cfg.PhotoMaxBytes,
+		AdminToken:    cfg.AdminToken,
+		TrustProxy:    cfg.TrustProxyHeaders,
 	})
 
 	jobsCtx, stopJobs := context.WithCancel(ctx)
@@ -123,8 +128,9 @@ func run() error {
 	go func() {
 		defer close(jobsDone)
 		jobs.New(pool, jobs.Config{
-			Interval:             cfg.JobsInterval,
-			GatewayHealthyWindow: cfg.SMSGatewayHealthyWindow,
+			Interval:                  cfg.JobsInterval,
+			GatewayHealthyWindow:      cfg.SMSGatewayHealthyWindow,
+			NotificationReadRetention: cfg.NotificationReadRetention,
 		}, logger).Run(jobsCtx)
 	}()
 

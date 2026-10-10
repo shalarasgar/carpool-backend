@@ -164,6 +164,48 @@ func (q *Queries) GetSMSGatewayByKeyHash(ctx context.Context, apiKeyHash string)
 	return i, err
 }
 
+const listSMSGateways = `-- name: ListSMSGateways :many
+SELECT id, name, last_heartbeat_at, is_active, operator_prefixes, created_at
+FROM sms_gateways
+ORDER BY created_at ASC, id ASC
+`
+
+type ListSMSGatewaysRow struct {
+	ID               pgtype.UUID
+	Name             string
+	LastHeartbeatAt  pgtype.Timestamptz
+	IsActive         bool
+	OperatorPrefixes []string
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) ListSMSGateways(ctx context.Context) ([]ListSMSGatewaysRow, error) {
+	rows, err := q.db.Query(ctx, listSMSGateways)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSMSGatewaysRow
+	for rows.Next() {
+		var i ListSMSGatewaysRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.LastHeartbeatAt,
+			&i.IsActive,
+			&i.OperatorPrefixes,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSMSFailed = `-- name: MarkSMSFailed :one
 UPDATE sms_queue
 SET attempts = attempts + 1,
@@ -242,6 +284,34 @@ func (q *Queries) RequeueStuckSMS(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const sMSQueueStats = `-- name: SMSQueueStats :one
+SELECT
+    count(*) FILTER (WHERE status = 'pending')::int AS pending,
+    count(*) FILTER (WHERE status = 'processing')::int AS processing,
+    count(*) FILTER (WHERE status = 'sent')::int AS sent,
+    count(*) FILTER (WHERE status = 'failed')::int AS failed
+FROM sms_queue
+`
+
+type SMSQueueStatsRow struct {
+	Pending    int32
+	Processing int32
+	Sent       int32
+	Failed     int32
+}
+
+func (q *Queries) SMSQueueStats(ctx context.Context) (SMSQueueStatsRow, error) {
+	row := q.db.QueryRow(ctx, sMSQueueStats)
+	var i SMSQueueStatsRow
+	err := row.Scan(
+		&i.Pending,
+		&i.Processing,
+		&i.Sent,
+		&i.Failed,
+	)
+	return i, err
 }
 
 const selectSMSGatewayForPhone = `-- name: SelectSMSGatewayForPhone :one

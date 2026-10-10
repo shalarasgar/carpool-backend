@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addUserRating = `-- name: AddUserRating :one
+UPDATE users AS u
+SET
+    rating_count = (
+        SELECT count(*)::int FROM reviews AS r WHERE r.to_user_id = u.id
+    ),
+    rating_avg = (
+        SELECT round(avg(r.rating)::numeric, 2) FROM reviews AS r WHERE r.to_user_id = u.id
+    )
+WHERE u.id = $1
+RETURNING rating_avg, rating_count
+`
+
+type AddUserRatingRow struct {
+	RatingAvg   pgtype.Numeric
+	RatingCount int32
+}
+
+// Recompute from this user's reviews so parallel ratings of the same person
+// stay exact. The caller inserts the new review first and already holds the
+// user row lock, so the two updates cannot interleave.
+func (q *Queries) AddUserRating(ctx context.Context, id pgtype.UUID) (AddUserRatingRow, error) {
+	row := q.db.QueryRow(ctx, addUserRating, id)
+	var i AddUserRatingRow
+	err := row.Scan(&i.RatingAvg, &i.RatingCount)
+	return i, err
+}
+
 const anonymizeUser = `-- name: AnonymizeUser :execrows
 UPDATE users
 SET name = '', photo_url = NULL, phone = $2, deleted_at = now()
@@ -156,6 +184,25 @@ func (q *Queries) GetUserByPhone(ctx context.Context, phone string) (User, error
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const setUserBlocked = `-- name: SetUserBlocked :execrows
+UPDATE users
+SET is_blocked = $2
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type SetUserBlockedParams struct {
+	ID        pgtype.UUID
+	IsBlocked bool
+}
+
+func (q *Queries) SetUserBlocked(ctx context.Context, arg SetUserBlockedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setUserBlocked, arg.ID, arg.IsBlocked)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setUserPhoto = `-- name: SetUserPhoto :one

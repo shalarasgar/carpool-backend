@@ -102,6 +102,8 @@ var statusByCode = map[string]int{
 	"BOOKING_NOT_FOUND":      http.StatusNotFound,
 	"INVALID_STATE":          http.StatusConflict,
 	"BOOKING_EXISTS":         http.StatusConflict,
+	"REVIEW_EXISTS":          http.StatusConflict,
+	"REVIEW_WINDOW_CLOSED":   http.StatusConflict,
 }
 
 // writeServiceError translates a service error into the envelope. Unknown

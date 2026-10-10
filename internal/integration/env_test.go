@@ -88,6 +88,7 @@ func newEnv(t *testing.T) *env {
 	e := &env{t: t, pool: pool, clock: time.Now()}
 
 	limiter := ratelimit.NewMemoryWithClock(e.now)
+	notifier := notify.Inbox{}
 	e.sms = sms.NewQueueProvider(pool, 30*time.Second, logger)
 	e.auth = service.NewAuth(
 		pool,
@@ -120,20 +121,24 @@ func newEnv(t *testing.T) *env {
 	photos, err := storage.NewLocal(t.TempDir(), "/v1/media/photos")
 	require.NoError(t, err)
 	const photoMax = 8 << 10
-	notifier := notify.Nop{Logger: logger}
 	router := server.NewRouter(server.Deps{
-		Logger:     logger,
-		Health:     service.NewHealth(store.NewReadiness(pool), logger),
-		Auth:       e.auth,
-		Gateway:    e.gateway,
-		Users:      service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: photoMax, AllowedTypes: []string{"image/jpeg", "image/png", "image/webp"}, PhoneHashKey: "integration-otp-secret-value"}, logger),
-		Vehicles:   service.NewVehicles(pool, 2, logger),
-		Locations:  service.NewLocations(pool),
-		Trips:      service.NewTrips(pool, notifier, logger),
-		Bookings:   service.NewBookings(pool, notifier, logger),
-		Photos:     photos,
-		PhotoMax:   photoMax,
-		AdminToken: testAdminToken,
+		Logger:        logger,
+		Health:        service.NewHealth(store.NewReadiness(pool), logger),
+		Auth:          e.auth,
+		Gateway:       e.gateway,
+		Users:         service.NewUsers(pool, photos, service.UserConfig{PhotoMaxBytes: photoMax, AllowedTypes: []string{"image/jpeg", "image/png", "image/webp"}, PhoneHashKey: "integration-otp-secret-value"}, notifier, logger),
+		Vehicles:      service.NewVehicles(pool, 2, logger),
+		Locations:     service.NewLocations(pool),
+		Trips:         service.NewTrips(pool, notifier, logger),
+		Bookings:      service.NewBookings(pool, notifier, logger),
+		Reviews:       service.NewReviews(pool, service.ReviewConfig{Window: 14 * 24 * time.Hour}, logger),
+		Blocks:        service.NewBlocks(pool, logger),
+		Reports:       service.NewReports(pool, ratelimit.NewMemory(), service.ReportConfig{Limit: 5, Window: time.Hour}, logger),
+		Notifications: service.NewNotifications(pool),
+		Admin:         service.NewAdmin(pool, notifier, service.AdminConfig{GatewayHealthyWindow: 30 * time.Second}, logger),
+		Photos:        photos,
+		PhotoMax:      photoMax,
+		AdminToken:    testAdminToken,
 	})
 	e.srv = httptest.NewServer(router)
 	t.Cleanup(e.srv.Close)

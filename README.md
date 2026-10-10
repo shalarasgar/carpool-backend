@@ -6,8 +6,9 @@ Backend for the Turkmenistan intercity carpool API. Done so far:
 - Phase B: phone + OTP authentication, JWT access tokens with rotating refresh tokens, the SMS queue drained by an Android gateway phone, gateway and admin endpoints, background maintenance, localized errors (tk/ru/en).
 - Phase C: the caller's profile and photo, vehicles, public profiles, and the location directory.
 - Phase D: trips, search, and bookings, including the seat lock that prevents overselling.
+- Phase E: reviews, user blocks, reports, the in-app notification inbox, and the rest of the admin API.
 
-Reviews, blocks, reports, the notification inbox and the rest of the admin API are not implemented yet. Booking and trip events are handed to a no-op notifier until that inbox exists.
+Push notifications (FCM), chat, and payments are not implemented.
 
 ## Prerequisites
 
@@ -75,6 +76,9 @@ docker compose up --build
 | `SMS_GATEWAY_HEALTHY_WINDOW` | A gateway is healthy if it heartbeated within this window. Default `30s`. |
 | `SMS_GATEWAY_MAX_BATCH` | Upper bound for `?limit=` on `/gateway/v1/pending`. Default `50`. |
 | `JOBS_INTERVAL` | Background maintenance period. Default `30s`. |
+| `NOTIFICATION_READ_RETENTION` | Delete read inbox rows older than this. Unread rows are kept. Default `720h` (30 days). |
+| `REVIEW_WINDOW` | How long after `departs_at` a participant may leave a review. Default `336h` (14 days). |
+| `REPORT_USER_LIMIT` / `REPORT_USER_WINDOW` | Reports one user may file per window. Default `10` / `24h`. |
 | `PHOTO_MAX_BYTES` | Maximum profile photo size. Default `2097152` (2 MiB). |
 | `PHOTO_ALLOWED_TYPES` | Comma-separated sniffed types. Default `image/jpeg,image/png,image/webp`. |
 | `PHOTO_DIR` | Directory for the local photo store. Default `data/photos`. The container image uses `/data/photos`. |
@@ -185,9 +189,11 @@ Every `JOBS_INTERVAL` (and once at startup) the process:
 - deletes OTP codes expired for more than 1 hour;
 - deletes refresh tokens that expired, or were revoked more than 7 days ago;
 - marks past `active` and `full` trips `completed` when they have at least one approved booking and `seats_left` equals `seats_total` minus those seats;
-- marks past `active` and `full` trips `expired` when they have no approved booking.
+- marks past `active` and `full` trips `expired` when they have no approved booking;
+- sets still-`pending` bookings on any trip whose `departs_at` has passed to `cancelled_by_driver` and writes a `booking_cancelled` inbox row in that same statement. They are not `rejected`, because the driver never decided. Future pending bookings and approved bookings are left alone;
+- deletes read inbox rows older than `NOTIFICATION_READ_RETENTION`. Unread rows are kept.
 
-The job does not change booking rows. A past trip that has approved bookings but a `seats_left` that does not match those seats is left as it is, and the count is logged. Pending bookings on an expired trip stay pending; approving one later returns `INVALID_STATE`.
+A past trip that has approved bookings but a `seats_left` that does not match those seats is left as it is, and the count is logged. Approving a booking after departure returns `INVALID_STATE`.
 
 ## Profiles, vehicles and locations
 
@@ -217,9 +223,36 @@ All of these routes require a JWT. Trip JSON never contains a phone number. A bo
 
 `POST /v1/bookings/{id}/approve` runs in one database transaction: lock the acting user, lock the trip with `SELECT ... FOR UPDATE`, lock the booking, check status and `seats_left`, decrement `seats_left`, set the trip to `full` at zero, then set the booking to `approved`. Approving the same booking again does not take the seats a second time. Not enough seats is `409 SEAT_UNAVAILABLE`. `POST /v1/bookings/{id}/reject` is the driver and only for a pending booking. `POST /v1/bookings/{id}/cancel` is the passenger or the driver. Cancelling an approved booking restores the seats and re-opens a `full` trip in that same locked transaction.
 
-Those decisions call `notify.Notifier` after the transaction commits: `booking_requested`, `booking_approved`, `booking_rejected`, `booking_cancelled`, and `trip_cancelled` (one event per passenger when a trip is cancelled, not a second booking event). The implementation in this phase is a no-op. A notifier error is logged and does not fail the request. Phase E will store the events in the inbox table.
+Those decisions insert an inbox row in the same transaction: `booking_requested`, `booking_approved`, `booking_rejected`, `booking_cancelled`, and `trip_cancelled` (one event per passenger when a trip is cancelled, not a second booking event). If the insert fails, the booking or trip change rolls back with it. Account deletion and an admin block do the same for the events they emit. The stored row is the event type plus `actor_id`, `trip_id`, and `booking_id`. Phone numbers are not stored. `title` and `body` are chosen from the recipient's saved `locale` when the inbox is read, not from `Accept-Language`.
 
 Mutating requests lock the acting user before the trip, and the trip before the booking, which is the same order account deletion uses.
+
+## Reviews, blocks, reports, and the inbox
+
+`POST /v1/trips/{id}/reviews` accepts `to_user_id`, `rating` (1..5), and an optional `comment` (500 characters). It is allowed only on a `completed` trip, only between the driver and a passenger who has an `approved` booking, and only once in each direction. Two passengers cannot review each other. Reviewing yourself is `403 FORBIDDEN`. A second review of the same person on the same trip is `409 REVIEW_EXISTS`. A trip that is not `completed` is `409 INVALID_STATE`. A review after `REVIEW_WINDOW` (default 14 days from `departs_at`, not from the moment the trip was marked completed) is `409 REVIEW_WINDOW_CLOSED`. The recipient row is locked, then the trip, then the approved booking. When the reviewer is locked too, the two user rows are locked in id order so mutual reviews cannot deadlock. `rating_count` and `rating_avg` are recomputed from that user's reviews in the same transaction, so parallel reviews of one person cannot lose an update. Review JSON has no phone number.
+
+`GET /v1/users/{id}/reviews` is page-based (`page`, `page_size`), newest first. A missing or deleted user is `404`.
+
+`POST /v1/users/{id}/block` is idempotent (`201` the first time, `200` if the block already exists). `DELETE` is idempotent and returns `204`. `GET /v1/me/blocks` lists who the caller blocked. A user-to-user block does not cancel an approved booking and does not change seats. It hides each side's trips from the other's search, rejects a new booking, and rejects approval of a request that is still pending (`403 FORBIDDEN`). `GET /v1/trips/{id}` for the other party is `404 TRIP_NOT_FOUND`, which was already the rule in Phase D. Blocking yourself is `403`.
+
+`POST /v1/reports` takes `reported_user_id`, optional `trip_id`, `reason` (`spam`, `harassment`, `scam`, `unsafe_driving`, `no_show`, `other`), and optional `details` (1000 characters). Reporting yourself is `403`. Each user may file `REPORT_USER_LIMIT` reports per `REPORT_USER_WINDOW` (default 10 per 24 hours); the limiter is the same in-memory limiter as OTP, so it resets on restart and is not shared between processes. A new report has status `open`.
+
+`GET /v1/me/notifications?limit=&cursor=` is cursor-paginated, newest first, and includes `unread_count` for the whole inbox. `POST /v1/me/notifications/read` takes `{"ids":[...]}` or `{"all":true}`. Ids that are not the caller's unread rows are ignored.
+
+## Admin
+
+`/admin/v1` uses `Authorization: Bearer $ADMIN_TOKEN`. The comparison is constant-time. A missing or wrong token is `403`, including a normal user JWT.
+
+| Call | Purpose |
+| --- | --- |
+| `POST /admin/v1/gateways` | Register a gateway. Returns the API key once. |
+| `GET /admin/v1/gateways` | List gateways with `healthy` (active and a heartbeat inside `SMS_GATEWAY_HEALTHY_WINDOW`). No API key. |
+| `GET /admin/v1/sms/stats` | `{pending, processing, sent, failed}` counts. |
+| `GET /admin/v1/reports?status=` | Page of reports. `status` is optional. |
+| `PATCH /admin/v1/reports/{id}` | Set status to `open`, `reviewing`, `resolved`, or `dismissed`. |
+| `POST /admin/v1/users/{id}/block` | Set `is_blocked`, revoke every refresh token, and run the account-deletion cascade without anonymizing. Vehicles are deleted because that cascade deletes them. The name, photo, and phone stay. |
+| `DELETE /admin/v1/users/{id}/block` | Clear `is_blocked`. Trips, bookings, vehicles, and refresh tokens are not restored. The existing access token works again until it expires; the refresh token does not. |
+| `PATCH /admin/v1/locations/{id}` | `{"is_active": false}`. Existing trips are not changed. New trips cannot use an inactive location. Search already skips inactive endpoints. |
 
 ## Verify
 
@@ -324,6 +357,39 @@ curl -s -X POST $BASE/v1/bookings/<BOOKING_ID>/cancel -H "Authorization: Bearer 
 # Cancelling the approved booking re-opens a full trip. The driver can also reject, or:
 curl -s -X POST $BASE/v1/trips/<TRIP_ID>/cancel -H "Authorization: Bearer $TOKEN"
 
+# Phase E. Complete the trip after departs_at, then review. The other direction is a separate review.
+curl -s -X POST $BASE/v1/trips/<TRIP_ID>/complete -H "Authorization: Bearer $TOKEN"
+curl -s -X POST $BASE/v1/trips/<TRIP_ID>/reviews -H "Authorization: Bearer $PASSENGER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"to_user_id":"<DRIVER_USER_ID>","rating":5,"comment":"on time"}'
+curl -s "$BASE/v1/users/<DRIVER_USER_ID>/reviews" -H "Authorization: Bearer $PASSENGER_TOKEN"
+
+# Block. 201 the first time, 200 if repeated. Approved bookings stay approved.
+curl -s -X POST $BASE/v1/users/<DRIVER_USER_ID>/block -H "Authorization: Bearer $PASSENGER_TOKEN"
+curl -s $BASE/v1/me/blocks -H "Authorization: Bearer $PASSENGER_TOKEN"
+curl -s -i -X DELETE $BASE/v1/users/<DRIVER_USER_ID>/block -H "Authorization: Bearer $PASSENGER_TOKEN"
+
+# Report. The sixth-or-so call in a fresh process is 429 once the per-user limit is hit.
+curl -s -X POST $BASE/v1/reports -H "Authorization: Bearer $PASSENGER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"reported_user_id":"<DRIVER_USER_ID>","trip_id":"<TRIP_ID>","reason":"no_show","details":"did not arrive"}'
+
+# Inbox. title/body follow the recipient's saved locale. Mark one id, or all.
+curl -s "$BASE/v1/me/notifications?limit=20" -H "Authorization: Bearer $TOKEN"
+curl -s -X POST $BASE/v1/me/notifications/read -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"all":true}'
+
+# Admin. ADMIN_TOKEN is the value from .env.
+curl -s "$BASE/admin/v1/reports?status=open" -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s -X PATCH $BASE/admin/v1/reports/<REPORT_ID> -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"status":"resolved"}'
+curl -s -X POST $BASE/admin/v1/users/<USER_ID>/block -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s -X DELETE $BASE/admin/v1/users/<USER_ID>/block -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s -X PATCH $BASE/admin/v1/locations/<LOCATION_ID> -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"is_active":false}'
+curl -s $BASE/admin/v1/gateways -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s $BASE/admin/v1/sms/stats -H "Authorization: Bearer $ADMIN_TOKEN"
+
 # Anonymize. The same phone can verify-otp again and gets a new empty user.
 # This also cancels the caller's active trips and passenger bookings and deletes their vehicles.
 curl -s -i -X DELETE $BASE/v1/me -H "Authorization: Bearer $TOKEN"
@@ -355,7 +421,7 @@ Phase B:
 - `logout` requires a valid access token and revokes the whole device (the `device_id` carried in the JWT) rather than taking a refresh token in the body. Refresh first if the access token has expired.
 - The SMS language follows `Accept-Language` of the `request-otp` call; the SMS text is ASCII-only to stay within one GSM-7 segment.
 - A gateway claims messages assigned to it or unassigned, regardless of its `operator_prefixes`; prefixes only steer the initial assignment.
-- The admin API in this phase contains only `POST /admin/v1/gateways`, which is needed to bootstrap a gateway. Listing gateways, SMS stats and user blocking arrive with the rest of the admin API in Phase E.
+- The admin API in Phase B contained only `POST /admin/v1/gateways`, which is needed to bootstrap a gateway. The rest of `/admin/v1` arrived in Phase E.
 - `golang.org/x/*` and `validator` are pinned to versions that still build with Go 1.23 so the Dockerfile base image keeps working.
 
 Phase C:
@@ -375,8 +441,23 @@ Phase D:
 - Pending bookings do not reserve seats. Two passengers can both request the last seat; only the approval that still sees `seats_left` succeeds.
 - `suggested_price` is a decimal string in responses (`"25.50"`). Requests may send that string or a JSON number. Currency is any 3 letters and defaults to `TMT`.
 - Trip search also hides trips whose driver is deleted or `is_blocked`. Direct `GET /v1/trips/{id}` still returns those trips unless a `user_blocks` row exists in either direction.
-- Completing a trip does not change its bookings. The maintenance job does not either. `expired` was added to `trip_status` for past trips that nobody was approved onto.
+- Completing a trip does not change its bookings. `expired` was added to `trip_status` for past trips that nobody was approved onto.
 - Cancelling a trip notifies passengers with `trip_cancelled` only. It does not also emit `booking_cancelled`.
-- The notifier is `notify.Nop` until Phase E. It does not write an inbox row.
+- Inbox rows for booking and trip changes are written inside the same database transaction. `notify.Nop` remains for tests that do not use the inbox.
 - Account deletion restores seats only on `active` and `full` trips. A restore that would exceed `seats_total` still cancels the booking and leaves the trip counters alone, so a corrupted seat total cannot block deletion.
 - Old sent SMS rows are not deleted yet. The job already removes expired OTP codes and refresh tokens.
+
+Phase E:
+
+- The review window is `REVIEW_WINDOW` after `departs_at`, default 14 days. It is not measured from the time the trip was marked `completed`.
+- A review is one direction of a driver/passenger pair. The passenger reviewing the driver and the driver reviewing the passenger are two rows. Passenger-to-passenger is `403`.
+- `rating_avg` is `round(avg(rating), 2)` of that user's reviews, recomputed under a lock on the reviewed user, so parallel reviews do not depend on commit order.
+- A user-to-user block does not cancel approved bookings. It does stop a new booking and the approval of a pending one, and it hides search results in both directions.
+- Admin `is_blocked` reuses the account-deletion cascade, including vehicle deletion, and does not anonymize. Unblock does not restore trips, bookings, vehicles, or refresh tokens.
+- Deactivating a location does not rewrite trips that already use it. Search continues to skip inactive locations, which it already did.
+- Report reasons are `spam`, `harassment`, `scam`, `unsafe_driving`, `no_show`, and `other`. Statuses are `open`, `reviewing`, `resolved`, and `dismissed`. The spec left both as text; the checks were added in migration `000006`.
+- The report rate limit is in-memory and per process, keyed by user id.
+- Inbox text is localized from `users.locale` at read time. `Accept-Language` does not change it. Pagination is a cursor (`limit`, `cursor`, `next_cursor`) plus `unread_count`. Reviews, blocks, and admin reports stay page-based.
+- The maintenance job turns pending bookings on trips that have already departed into `cancelled_by_driver` and inserts `booking_cancelled` in the same statement. It does not use `rejected`.
+- Read notifications older than 30 days are deleted. Unread notifications are kept.
+- `POST /v1/users/{id}/block` returns `201` or `200`. `DELETE` returns `204` even when there was nothing to delete.

@@ -54,6 +54,15 @@ type Config struct {
 
 	// Background jobs
 	JobsInterval time.Duration `envconfig:"JOBS_INTERVAL" default:"30s"`
+	// Read notifications older than this are deleted. Unread rows are kept.
+	NotificationReadRetention time.Duration `envconfig:"NOTIFICATION_READ_RETENTION" default:"720h"`
+
+	// Reviews may be left until this long after departs_at. Default is 14 days.
+	ReviewWindow time.Duration `envconfig:"REVIEW_WINDOW" default:"336h"`
+
+	// Reports per user.
+	ReportUserLimit  int           `envconfig:"REPORT_USER_LIMIT" default:"10"`
+	ReportUserWindow time.Duration `envconfig:"REPORT_USER_WINDOW" default:"24h"`
 
 	// Profile photos. Types are sniffed from the file bytes, not the multipart header.
 	PhotoMaxBytes     int64    `envconfig:"PHOTO_MAX_BYTES" default:"2097152"`
@@ -117,6 +126,10 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("sms_lock_duration", c.SMSLockDuration),
 		slog.Duration("sms_gateway_healthy_window", c.SMSGatewayHealthyWindow),
 		slog.Duration("jobs_interval", c.JobsInterval),
+		slog.Duration("notification_read_retention", c.NotificationReadRetention),
+		slog.Duration("review_window", c.ReviewWindow),
+		slog.Int("report_user_limit", c.ReportUserLimit),
+		slog.Duration("report_user_window", c.ReportUserWindow),
 		slog.Int64("photo_max_bytes", c.PhotoMaxBytes),
 		slog.Any("photo_allowed_types", c.PhotoAllowedTypes),
 		slog.String("photo_dir", c.PhotoDir),
@@ -201,6 +214,15 @@ func (c Config) validate() error {
 	}
 	if c.JobsInterval <= 0 {
 		return fmt.Errorf("JOBS_INTERVAL must be greater than 0")
+	}
+	if c.NotificationReadRetention <= 0 {
+		return fmt.Errorf("NOTIFICATION_READ_RETENTION must be greater than 0")
+	}
+	if c.ReviewWindow <= 0 {
+		return fmt.Errorf("REVIEW_WINDOW must be greater than 0")
+	}
+	if c.ReportUserLimit < 1 || c.ReportUserWindow <= 0 {
+		return fmt.Errorf("REPORT_USER_LIMIT must be at least 1 and REPORT_USER_WINDOW must be greater than 0")
 	}
 	if c.PhotoMaxBytes < 1 || c.PhotoMaxBytes > 5<<20 {
 		return fmt.Errorf("PHOTO_MAX_BYTES must be between 1 and 5242880")

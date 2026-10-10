@@ -99,6 +99,56 @@ func Message(locale, code string) string {
 	return code
 }
 
+// Notification returns the inbox title and body for a stored event type.
+// The text is chosen from the recipient's saved locale at read time.
+func Notification(locale, kind string) (title, body string) {
+	if !Supported(locale) {
+		locale = DefaultLocale
+	}
+	copy, ok := notificationCopy[kind]
+	if !ok {
+		return kind, ""
+	}
+	text, ok := copy[locale]
+	if !ok {
+		text = copy[DefaultLocale]
+	}
+	return text.title, text.body
+}
+
+type notificationText struct {
+	title string
+	body  string
+}
+
+var notificationCopy = map[string]map[string]notificationText{
+	"booking_requested": {
+		LocaleTK: {title: "Täze ýer haýyşy", body: "Ýolagçy syýahatyňyza ýer sorady."},
+		LocaleRU: {title: "Новый запрос места", body: "Пассажир запросил место в вашей поездке."},
+		LocaleEN: {title: "New seat request", body: "A passenger requested a seat on your trip."},
+	},
+	"booking_approved": {
+		LocaleTK: {title: "Haýyş tassyklandy", body: "Sürüji ýer haýşyňyzy tassyklady."},
+		LocaleRU: {title: "Запрос подтверждён", body: "Водитель подтвердил ваш запрос места."},
+		LocaleEN: {title: "Request approved", body: "The driver approved your seat request."},
+	},
+	"booking_rejected": {
+		LocaleTK: {title: "Haýyş ret edildi", body: "Sürüji ýer haýşyňyzy ret etdi."},
+		LocaleRU: {title: "Запрос отклонён", body: "Водитель отклонил ваш запрос места."},
+		LocaleEN: {title: "Request declined", body: "The driver declined your seat request."},
+	},
+	"booking_cancelled": {
+		LocaleTK: {title: "Bron ýatyryldy", body: "Bu syýahatdaky bron ýatyryldy."},
+		LocaleRU: {title: "Бронь отменена", body: "Бронь на эту поездку отменена."},
+		LocaleEN: {title: "Booking cancelled", body: "A booking on this trip was cancelled."},
+	},
+	"trip_cancelled": {
+		LocaleTK: {title: "Syýahat ýatyryldy", body: "Sürüji syýahaty ýatyrdy."},
+		LocaleRU: {title: "Поездка отменена", body: "Водитель отменил поездку."},
+		LocaleEN: {title: "Trip cancelled", body: "The driver cancelled the trip."},
+	},
+}
+
 // OTPSMS renders the one-time code SMS. The text is ASCII-only so it fits in a
 // single GSM-7 segment on every operator.
 func OTPSMS(locale, appName, code string) string {
@@ -242,5 +292,15 @@ var messages = map[string]map[string]string{
 		LocaleTK: "Bu syýahata eýýäm işjeň bron bar.",
 		LocaleRU: "У вас уже есть активная бронь на эту поездку.",
 		LocaleEN: "You already have an active booking on this trip.",
+	},
+	"REVIEW_EXISTS": {
+		LocaleTK: "Bu syýahat üçin syn eýýäm berildi.",
+		LocaleRU: "Вы уже оставили отзыв по этой поездке.",
+		LocaleEN: "You already reviewed this trip.",
+	},
+	"REVIEW_WINDOW_CLOSED": {
+		LocaleTK: "Syn bermegiň möhleti geçdi.",
+		LocaleRU: "Срок для отзыва истёк.",
+		LocaleEN: "The review window has closed.",
 	},
 }

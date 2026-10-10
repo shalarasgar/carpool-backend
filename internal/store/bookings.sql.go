@@ -47,6 +47,39 @@ func (q *Queries) CancelLiveBookingsForTrip(ctx context.Context, tripID pgtype.U
 	return items, nil
 }
 
+const cancelStalePendingBookings = `-- name: CancelStalePendingBookings :execrows
+WITH cancelled AS (
+    UPDATE bookings AS b
+    SET status = 'cancelled_by_driver'
+    FROM trips AS t
+    WHERE b.trip_id = t.id
+      AND b.status = 'pending'
+      AND t.departs_at <= now()
+    RETURNING b.id, b.trip_id, b.passenger_id, t.driver_id
+)
+INSERT INTO notifications (user_id, type, payload)
+SELECT
+    c.passenger_id,
+    'booking_cancelled',
+    jsonb_build_object(
+        'actor_id', c.driver_id,
+        'trip_id', c.trip_id,
+        'booking_id', c.id
+    )
+FROM cancelled AS c
+`
+
+// Pending bookings whose trip has already departed become cancelled_by_driver.
+// The driver never decided, so the row is not rejected. The passenger is
+// notified in the same statement. Approved bookings are left as they are.
+func (q *Queries) CancelStalePendingBookings(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelStalePendingBookings)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createBooking = `-- name: CreateBooking :one
 INSERT INTO bookings (trip_id, passenger_id, seats)
 VALUES ($1, $2, $3)
@@ -61,6 +94,35 @@ type CreateBookingParams struct {
 
 func (q *Queries) CreateBooking(ctx context.Context, arg CreateBookingParams) (Booking, error) {
 	row := q.db.QueryRow(ctx, createBooking, arg.TripID, arg.PassengerID, arg.Seats)
+	var i Booking
+	err := row.Scan(
+		&i.ID,
+		&i.TripID,
+		&i.PassengerID,
+		&i.Seats,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getApprovedBookingForPassenger = `-- name: GetApprovedBookingForPassenger :one
+SELECT id, trip_id, passenger_id, seats, status, created_at, updated_at
+FROM bookings
+WHERE trip_id = $1
+  AND passenger_id = $2
+  AND status = 'approved'
+FOR UPDATE
+`
+
+type GetApprovedBookingForPassengerParams struct {
+	TripID      pgtype.UUID
+	PassengerID pgtype.UUID
+}
+
+func (q *Queries) GetApprovedBookingForPassenger(ctx context.Context, arg GetApprovedBookingForPassengerParams) (Booking, error) {
+	row := q.db.QueryRow(ctx, getApprovedBookingForPassenger, arg.TripID, arg.PassengerID)
 	var i Booking
 	err := row.Scan(
 		&i.ID,

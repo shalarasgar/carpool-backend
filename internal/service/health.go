@@ -27,6 +27,7 @@ type Health struct {
 	store  ReadinessStore
 	logger *slog.Logger
 	now    func() time.Time
+	window time.Duration
 }
 
 // NewHealth returns a readiness checker. logger may be nil.
@@ -34,7 +35,16 @@ func NewHealth(store ReadinessStore, logger *slog.Logger) *Health {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Health{store: store, logger: logger, now: time.Now}
+	return &Health{store: store, logger: logger, now: time.Now, window: smsGatewayHealthyWindow}
+}
+
+// WithGatewayWindow overrides how recent a gateway heartbeat must be. It
+// should match SMS_GATEWAY_HEALTHY_WINDOW so /readyz agrees with routing.
+func (h *Health) WithGatewayWindow(window time.Duration) *Health {
+	if window > 0 {
+		h.window = window
+	}
+	return h
 }
 
 // CheckReady pings the database. A database error fails the check.
@@ -44,7 +54,7 @@ func (h *Health) CheckReady(ctx context.Context) (Status, error) {
 		return Status{Database: "down", SMSGatewayHealthy: false}, err
 	}
 
-	since := h.now().Add(-smsGatewayHealthyWindow)
+	since := h.now().Add(-h.window)
 	healthy, err := h.store.HasHealthySMSGateway(ctx, since)
 	if err != nil {
 		h.logger.Warn("sms gateway health check failed", "err", err)

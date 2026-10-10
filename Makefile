@@ -1,7 +1,9 @@
-.PHONY: run build test migrate-up migrate-down sqlc lint
+.PHONY: run build test test-integration migrate-up migrate-down sqlc lint
 
 SQLC ?= sqlc
 MIGRATE ?= migrate
+# Server used by integration tests. Each test creates and drops its own database here.
+TEST_DATABASE_URL ?= postgres://carpool:carpool@localhost:5432/carpool?sslmode=disable
 
 run:
 	go run ./cmd/api
@@ -11,6 +13,9 @@ build:
 
 test:
 	go test ./...
+
+test-integration:
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test ./... -count=1
 
 migrate-up:
 	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \

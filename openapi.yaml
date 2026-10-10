@@ -1,0 +1,461 @@
+openapi: 3.0.3
+info:
+  title: Carpool API
+  version: 0.2.0
+  description: |
+    Backend for the Turkmenistan intercity carpool app.
+
+    Phase B: phone + OTP authentication, token refresh, the SMS gateway
+    contract for the Android sender app, and the admin endpoint that
+    registers gateways.
+
+    **Localization.** Send `Accept-Language: tk`, `ru` or `en`. Error
+    messages are localized; the default is `tk`. The response carries
+    `Content-Language`.
+
+    **Error envelope.** Every error is
+    `{"error":{"code":"STABLE_CODE","message":"<localized>","details":{...}}}`.
+    `details` is present only for `VALIDATION_ERROR` and maps field name to
+    the failed rule (`required`, `len`, `numeric`, ...).
+
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: health
+  - name: auth
+  - name: gateway
+    description: "Called by the Android SMS gateway app. Authenticate with `Authorization: Bearer <api_key>`."
+  - name: admin
+    description: "Operator endpoints. Authenticate with `Authorization: Bearer <ADMIN_TOKEN>`."
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      responses:
+        "200":
+          description: Process is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness
+      description: 200 when the database answers. `sms_gateway_healthy` is informational and true when an active gateway heartbeated within `SMS_GATEWAY_HEALTHY_WINDOW` (default 30s).
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: Database unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+
+  /v1/auth/request-otp:
+    post:
+      tags: [auth]
+      summary: Send a one-time code by SMS
+      description: |
+        Normalizes the phone to E.164 (+993XXXXXXXX), applies rate limits
+        (1 per phone per 60s, 5 per phone per day, per-IP and per-device
+        caps) and queues the SMS. The response is identical for new,
+        existing and blocked phones. With `DEV_MODE=true` the server also
+        returns `dev_code` for local testing.
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  maxLength: 32
+                  description: Any of +99365123456, 99365123456, 865123456, 65123456; spaces and dashes allowed.
+                  example: "+99365123456"
+                device_id:
+                  type: string
+                  maxLength: 128
+                  description: Optional stable device identifier used for per-device rate limits.
+      responses:
+        "200":
+          description: Code sent (or queued)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expires_in, retry_after]
+                properties:
+                  expires_in: { type: integer, description: Seconds the code stays valid, example: 300 }
+                  retry_after: { type: integer, description: Seconds before another code may be requested, example: 60 }
+                  dev_code: { type: string, description: Present only when DEV_MODE=true, example: "482913" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/auth/verify-otp:
+    post:
+      tags: [auth]
+      summary: Verify the code and sign in
+      description: |
+        Creates the user on first login. Wrong codes count toward
+        `OTP_MAX_ATTEMPTS` (default 5); after that the code is invalidated.
+        Any previous refresh tokens of the same `device_id` are revoked.
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code, device_id]
+              properties:
+                phone: { type: string, example: "+99365123456" }
+                code: { type: string, pattern: "^[0-9]{6}$", example: "482913" }
+                device_id: { type: string, minLength: 1, maxLength: 128, example: "a1b2c3-flutter-device" }
+      responses:
+        "200":
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`OTP_INVALID`, `OTP_EXPIRED` or `OTP_ATTEMPTS_EXCEEDED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate the refresh token
+      description: |
+        Returns a new access/refresh pair and revokes the presented refresh
+        token. Presenting a token that was already rotated revokes every
+        token of that device (`REFRESH_TOKEN_INVALID`); the app must sign
+        in again.
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`REFRESH_TOKEN_INVALID` or `REFRESH_TOKEN_EXPIRED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "`USER_BLOCKED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Sign out this device
+      description: Revokes every refresh token of the device encoded in the access token. The access token itself stays valid until it expires (15 minutes).
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/AcceptLanguage" } ]
+      responses:
+        "204": { description: Signed out }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /gateway/v1/pending:
+    get:
+      tags: [gateway]
+      summary: Claim pending SMS to send
+      description: |
+        Atomically claims up to `limit` pending messages for this gateway
+        (`SELECT ... FOR UPDATE SKIP LOCKED`), marks them `processing`
+        and locks them for `SMS_LOCK_DURATION` (default 60s). Also records a
+        heartbeat. The gateway must call `/gateway/v1/report` for every
+        message before `locked_until`; otherwise the server returns the
+        message to `pending` and it may be claimed again.
+      security: [ { gatewayKey: [] } ]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, default: 10 }
+          description: Clamped to `SMS_GATEWAY_MAX_BATCH` (default 50).
+      responses:
+        "200":
+          description: Claimed messages (possibly empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages]
+                properties:
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/GatewayMessage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /gateway/v1/report:
+    post:
+      tags: [gateway]
+      summary: Report a delivery result
+      description: |
+        `sent` marks the message delivered. `failed` increments `attempts`
+        and returns the message to `pending`; after `SMS_MAX_ATTEMPTS`
+        (default 3) it is marked `failed` permanently. Only the gateway that
+        claimed the message may report it.
+      security: [ { gatewayKey: [] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id: { type: string, format: uuid }
+                status: { type: string, enum: [sent, failed] }
+                error: { type: string, maxLength: 500, description: Free-text reason when status is failed. }
+      responses:
+        "200":
+          description: Queue state after the report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [sent, pending, failed] }
+                  attempts: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`SMS_NOT_FOUND`: unknown id, not claimed by this gateway, or already final"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /gateway/v1/heartbeat:
+    post:
+      tags: [gateway]
+      summary: Heartbeat
+      description: Marks the gateway healthy. Call it at least every 20 seconds when idle; `/pending` and `/report` also count as heartbeats.
+      security: [ { gatewayKey: [] } ]
+      responses:
+        "200":
+          description: Alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gateway: { type: string }
+                  server_time: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/v1/gateways:
+    post:
+      tags: [admin]
+      summary: Register an SMS gateway
+      description: Returns the plain API key exactly once. Only its SHA-256 is stored.
+      security: [ { adminToken: [] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64, example: android-phone-1 }
+                operator_prefixes:
+                  type: array
+                  maxItems: 16
+                  items: { type: string, pattern: "^[0-9]{1,8}$" }
+                  description: National-number prefixes (digits after +993) this gateway should serve, e.g. ["61","62","63","64","65"]. Empty means any number.
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  api_key: { type: string, example: gw_Qm9... }
+                  operator_prefixes: { type: array, items: { type: string } }
+                  created_at: { type: string, format: date-time }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`GATEWAY_EXISTS`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    gatewayKey:
+      type: http
+      scheme: bearer
+      description: Per-gateway API key returned by POST /admin/v1/gateways.
+    adminToken:
+      type: http
+      scheme: bearer
+      description: Static ADMIN_TOKEN from the server environment.
+
+  parameters:
+    AcceptLanguage:
+      name: Accept-Language
+      in: header
+      required: false
+      schema: { type: string, example: ru }
+
+  responses:
+    BadRequest:
+      description: "`BAD_REQUEST` (malformed JSON or unknown field) or `PAYLOAD_TOO_LARGE` (413)"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unprocessable:
+      description: "`VALIDATION_ERROR` with field details, or `INVALID_PHONE`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "`UNAUTHORIZED`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "`FORBIDDEN`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: "`RATE_LIMITED`. The `Retry-After` header gives the wait in seconds."
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - BAD_REQUEST
+                - VALIDATION_ERROR
+                - PAYLOAD_TOO_LARGE
+                - INVALID_PHONE
+                - OTP_INVALID
+                - OTP_EXPIRED
+                - OTP_ATTEMPTS_EXCEEDED
+                - RATE_LIMITED
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - USER_BLOCKED
+                - REFRESH_TOKEN_INVALID
+                - REFRESH_TOKEN_EXPIRED
+                - NOT_FOUND
+                - METHOD_NOT_ALLOWED
+                - INTERNAL
+                - SMS_NOT_FOUND
+                - GATEWAY_EXISTS
+            message: { type: string, description: Localized per Accept-Language. }
+            details:
+              type: object
+              additionalProperties: { type: string }
+              description: Field -> failed validation rule. Only for VALIDATION_ERROR.
+
+    Readiness:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+        database: { type: string, enum: [up, down] }
+        sms_gateway_healthy: { type: boolean }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        phone: { type: string, example: "+99365123456" }
+        name: { type: string }
+        photo_url: { type: string, nullable: true }
+        rating_avg: { type: number, format: double }
+        rating_count: { type: integer }
+        locale: { type: string, enum: [tk, ru, en] }
+        created_at: { type: string, format: date-time }
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, refresh_token]
+      properties:
+        access_token: { type: string, description: JWT, valid for ACCESS_TOKEN_TTL (15m). }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: Access token lifetime in seconds, example: 900 }
+        refresh_token: { type: string, description: Opaque, valid for REFRESH_TOKEN_TTL (30d), single use. }
+
+    LoginResponse:
+      allOf:
+        - $ref: "#/components/schemas/TokenResponse"
+        - type: object
+          required: [user, is_new_user]
+          properties:
+            user: { $ref: "#/components/schemas/User" }
+            is_new_user: { type: boolean }
+
+    GatewayMessage:
+      type: object
+      required: [id, phone, message, attempts, locked_until, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        phone: { type: string, example: "+99365123456" }
+        message: { type: string, example: "Carpool: kod 482913. Kimseyle paylasmanyn." }
+        attempts: { type: integer, description: Previous failed delivery attempts. }
+        locked_until: { type: string, format: date-time, description: Report before this time or the message is re-queued. }
+        created_at: { type: string, format: date-time }

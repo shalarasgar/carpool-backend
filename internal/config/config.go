@@ -27,6 +27,37 @@ type Config struct {
 
 	MigrateOnStart bool `envconfig:"MIGRATE_ON_START" default:"false"`
 
+	// Phone validation: digits that may follow +993. "6,7" accepts +9936xxxxxxx and +9937xxxxxxx.
+	AllowedPhonePrefixes []string `envconfig:"ALLOWED_PHONE_PREFIXES" default:"6,7"`
+
+	// OTP
+	OTPTTL             time.Duration `envconfig:"OTP_TTL" default:"5m"`
+	OTPMaxAttempts     int           `envconfig:"OTP_MAX_ATTEMPTS" default:"5"`
+	OTPPhoneCooldown   time.Duration `envconfig:"OTP_PHONE_COOLDOWN" default:"60s"`
+	OTPPhoneDailyLimit int           `envconfig:"OTP_PHONE_DAILY_LIMIT" default:"5"`
+	OTPIPLimit         int           `envconfig:"OTP_IP_LIMIT" default:"30"`
+	OTPIPWindow        time.Duration `envconfig:"OTP_IP_WINDOW" default:"1h"`
+	OTPDeviceLimit     int           `envconfig:"OTP_DEVICE_LIMIT" default:"10"`
+	OTPDeviceWindow    time.Duration `envconfig:"OTP_DEVICE_WINDOW" default:"1h"`
+	RateLimiterBackend string        `envconfig:"RATE_LIMITER" default:"memory"`
+
+	// Tokens
+	AccessTokenTTL  time.Duration `envconfig:"ACCESS_TOKEN_TTL" default:"15m"`
+	RefreshTokenTTL time.Duration `envconfig:"REFRESH_TOKEN_TTL" default:"720h"`
+
+	// SMS
+	SMSProvider             string        `envconfig:"SMS_PROVIDER" default:"queue"`
+	SMSMaxAttempts          int           `envconfig:"SMS_MAX_ATTEMPTS" default:"3"`
+	SMSLockDuration         time.Duration `envconfig:"SMS_LOCK_DURATION" default:"60s"`
+	SMSGatewayHealthyWindow time.Duration `envconfig:"SMS_GATEWAY_HEALTHY_WINDOW" default:"30s"`
+	SMSGatewayMaxBatch      int           `envconfig:"SMS_GATEWAY_MAX_BATCH" default:"50"`
+
+	// Background jobs
+	JobsInterval time.Duration `envconfig:"JOBS_INTERVAL" default:"30s"`
+
+	// Set to true only behind a reverse proxy that overwrites X-Forwarded-For.
+	TrustProxyHeaders bool `envconfig:"TRUST_PROXY_HEADERS" default:"false"`
+
 	DBMaxConns          int32         `envconfig:"DB_MAX_CONNS" default:"10"`
 	DBMinConns          int32         `envconfig:"DB_MIN_CONNS" default:"2"`
 	DBMaxConnLifetime   time.Duration `envconfig:"DB_MAX_CONN_LIFETIME" default:"30m"`
@@ -64,6 +95,20 @@ func (c Config) LogValue() slog.Value {
 		slog.Int("port", c.Port),
 		slog.Bool("dev_mode", c.DevMode),
 		slog.Bool("migrate_on_start", c.MigrateOnStart),
+		slog.Any("allowed_phone_prefixes", c.AllowedPhonePrefixes),
+		slog.Duration("otp_ttl", c.OTPTTL),
+		slog.Int("otp_max_attempts", c.OTPMaxAttempts),
+		slog.Duration("otp_phone_cooldown", c.OTPPhoneCooldown),
+		slog.Int("otp_phone_daily_limit", c.OTPPhoneDailyLimit),
+		slog.String("rate_limiter", c.RateLimiterBackend),
+		slog.Duration("access_token_ttl", c.AccessTokenTTL),
+		slog.Duration("refresh_token_ttl", c.RefreshTokenTTL),
+		slog.String("sms_provider", c.SMSProvider),
+		slog.Int("sms_max_attempts", c.SMSMaxAttempts),
+		slog.Duration("sms_lock_duration", c.SMSLockDuration),
+		slog.Duration("sms_gateway_healthy_window", c.SMSGatewayHealthyWindow),
+		slog.Duration("jobs_interval", c.JobsInterval),
+		slog.Bool("trust_proxy_headers", c.TrustProxyHeaders),
 		slog.Int("db_max_conns", int(c.DBMaxConns)),
 		slog.Int("db_min_conns", int(c.DBMinConns)),
 		slog.Duration("db_max_conn_lifetime", c.DBMaxConnLifetime),
@@ -111,6 +156,38 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be greater than 0")
+	}
+	if len(c.AllowedPhonePrefixes) == 0 {
+		return fmt.Errorf("ALLOWED_PHONE_PREFIXES must list at least one prefix")
+	}
+	for _, p := range c.AllowedPhonePrefixes {
+		if p == "" || len(p) > 8 || strings.Trim(p, "0123456789") != "" {
+			return fmt.Errorf("ALLOWED_PHONE_PREFIXES entries must be 1-8 digits, got %q", p)
+		}
+	}
+	if c.OTPTTL <= 0 || c.OTPPhoneCooldown <= 0 || c.OTPIPWindow <= 0 || c.OTPDeviceWindow <= 0 {
+		return fmt.Errorf("OTP durations must be greater than 0")
+	}
+	if c.OTPMaxAttempts < 1 || c.OTPPhoneDailyLimit < 1 || c.OTPIPLimit < 1 || c.OTPDeviceLimit < 1 {
+		return fmt.Errorf("OTP limits must be at least 1")
+	}
+	if c.RateLimiterBackend != "memory" {
+		return fmt.Errorf("RATE_LIMITER must be \"memory\"")
+	}
+	if c.AccessTokenTTL <= 0 || c.RefreshTokenTTL <= 0 {
+		return fmt.Errorf("token TTLs must be greater than 0")
+	}
+	if c.SMSProvider != "queue" && c.SMSProvider != "noop" {
+		return fmt.Errorf("SMS_PROVIDER must be \"queue\" or \"noop\"")
+	}
+	if c.SMSMaxAttempts < 1 || c.SMSGatewayMaxBatch < 1 {
+		return fmt.Errorf("SMS_MAX_ATTEMPTS and SMS_GATEWAY_MAX_BATCH must be at least 1")
+	}
+	if c.SMSLockDuration <= 0 || c.SMSGatewayHealthyWindow <= 0 {
+		return fmt.Errorf("SMS durations must be greater than 0")
+	}
+	if c.JobsInterval <= 0 {
+		return fmt.Errorf("JOBS_INTERVAL must be greater than 0")
 	}
 	return nil
 }

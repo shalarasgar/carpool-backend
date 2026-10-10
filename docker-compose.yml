@@ -28,6 +28,7 @@ services:
       OTP_HMAC_SECRET: dev-otp-hmac-secret-change
       ADMIN_TOKEN: dev-admin-token-change
       MIGRATE_ON_START: "true"
+      SMS_PROVIDER: queue
     depends_on:
       postgres:
         condition: service_healthy

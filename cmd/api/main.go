@@ -11,10 +11,14 @@ import (
 	"syscall"
 
 	"github.com/joho/godotenv"
+	"github.com/shalarasgar/carpool-backend/internal/auth"
 	"github.com/shalarasgar/carpool-backend/internal/config"
 	"github.com/shalarasgar/carpool-backend/internal/http"
+	"github.com/shalarasgar/carpool-backend/internal/jobs"
 	appmigrate "github.com/shalarasgar/carpool-backend/internal/migrate"
+	"github.com/shalarasgar/carpool-backend/internal/ratelimit"
 	"github.com/shalarasgar/carpool-backend/internal/service"
+	"github.com/shalarasgar/carpool-backend/internal/sms"
 	"github.com/shalarasgar/carpool-backend/internal/store"
 )
 
@@ -55,10 +59,60 @@ func run() error {
 	}
 	defer pool.Close()
 
+	var provider sms.Provider
+	switch cfg.SMSProvider {
+	case "noop":
+		provider = sms.NewNoopProvider(logger)
+	default:
+		provider = sms.NewQueueProvider(pool, cfg.SMSGatewayHealthyWindow, logger)
+	}
+
+	authSvc := service.NewAuth(
+		pool,
+		auth.NewPhoneNormalizer(cfg.AllowedPhonePrefixes),
+		auth.NewOTP(cfg.OTPHMACSecret, cfg.OTPMaxAttempts),
+		auth.NewJWT(cfg.JWTSecret, cfg.AppName, cfg.AccessTokenTTL),
+		provider,
+		ratelimit.NewMemory(),
+		service.AuthConfig{
+			AppName:         cfg.AppName,
+			DevMode:         cfg.DevMode,
+			OTPTTL:          cfg.OTPTTL,
+			PhoneCooldown:   cfg.OTPPhoneCooldown,
+			PhoneDailyLimit: cfg.OTPPhoneDailyLimit,
+			IPLimit:         cfg.OTPIPLimit,
+			IPWindow:        cfg.OTPIPWindow,
+			DeviceLimit:     cfg.OTPDeviceLimit,
+			DeviceWindow:    cfg.OTPDeviceWindow,
+			RefreshTokenTTL: cfg.RefreshTokenTTL,
+		},
+		logger,
+	)
+	gatewaySvc := service.NewGateway(pool, service.GatewayConfig{
+		LockDuration: cfg.SMSLockDuration,
+		MaxAttempts:  cfg.SMSMaxAttempts,
+		MaxBatch:     cfg.SMSGatewayMaxBatch,
+	}, logger)
+
 	router := server.NewRouter(server.Deps{
-		Logger: logger,
-		Health: service.NewHealth(store.NewReadiness(pool), logger),
+		Logger:     logger,
+		Health:     service.NewHealth(store.NewReadiness(pool), logger).WithGatewayWindow(cfg.SMSGatewayHealthyWindow),
+		Auth:       authSvc,
+		Gateway:    gatewaySvc,
+		AdminToken: cfg.AdminToken,
+		TrustProxy: cfg.TrustProxyHeaders,
 	})
+
+	jobsCtx, stopJobs := context.WithCancel(ctx)
+	defer stopJobs()
+	jobsDone := make(chan struct{})
+	go func() {
+		defer close(jobsDone)
+		jobs.New(pool, jobs.Config{
+			Interval:             cfg.JobsInterval,
+			GatewayHealthyWindow: cfg.SMSGatewayHealthyWindow,
+		}, logger).Run(jobsCtx)
+	}()
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
@@ -89,6 +143,8 @@ func run() error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown: %w", err)
 		}
+		stopJobs()
+		<-jobsDone
 		return nil
 	}
 }

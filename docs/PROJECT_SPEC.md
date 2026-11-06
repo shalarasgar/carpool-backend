@@ -71,7 +71,7 @@ OTP rules:
 - Rate limits: 1 SMS per phone per 60 seconds, max 5 per phone per day (configurable), plus per-IP and per-device limits. Return 429 with Retry-After.
 - Normalize and validate phone numbers to E.164 (+993 prefix, 8 digits after the country code; accept the +993 6x/7x mobile formats and make the allowed prefixes configurable).
 - Use constant-time comparison. Response timing and messages must not reveal whether a user exists.
-- SMS text: "<AppName>: kod 123456. Kimseyle paylasmanyn." (localized, ASCII-safe to keep it in a single SMS segment).
+- SMS text: "<AppName>: kod 123456. Kody hiçkim bilen paýlaşmaň!" (localized; the Turkmen text is sent as UCS-2, so it must stay within 70 characters to fit a single SMS segment).
 
 ## 5. SMS gateway (Android phone acts as the SMS sender)
 The server cannot reach the phone directly, so the phone POLLS the server.

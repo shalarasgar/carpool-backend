@@ -4,10 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/shalarasgar/carpool-backend/internal/smsqueue"
 )
 
 // smsGatewayHealthyWindow matches the gateway heartbeat window in the spec.
-const smsGatewayHealthyWindow = 30 * time.Second
+const smsGatewayHealthyWindow = smsqueue.HealthyWindow
 
 // ReadinessStore is the storage needed to decide if the process can serve traffic.
 type ReadinessStore interface {

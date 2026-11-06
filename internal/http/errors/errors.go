@@ -15,6 +15,10 @@ type Envelope struct {
 type Body struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Field names the invalid input field of a VALIDATION_ERROR, when known.
+	Field string `json:"field,omitempty"`
+	// Details carries machine-readable context, for example the conflicting trip id.
+	Details map[string]string `json:"details,omitempty"`
 }
 
 // Write sends a JSON error envelope.

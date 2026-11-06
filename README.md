@@ -1,6 +1,13 @@
 # Carpool backend
 
-Phase A skeleton for the Turkmenistan intercity carpool API: configuration, PostgreSQL, migrations, structured logging, and health checks. Auth, trips, and bookings are not implemented yet.
+Go API for the Turkmenistan intercity carpool app (Flutter client: `../yolugra`). It provides phone OTP login through the Android SMS gateway, profiles, vehicles, locations, trips with intermediate stops, segment-based bookings with transactional seat control, contact privacy, reviews, and an in-app notification inbox.
+
+| Document | Content |
+| --- | --- |
+| [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) | Every endpoint, request and response, error codes. |
+| [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) | Tables, constraints, migrations. |
+| [docs/BOOKING_AND_SEAT_MANAGEMENT.md](docs/BOOKING_AND_SEAT_MANAGEMENT.md) | Segment capacity, locking, cancellation, driver overlap rule. |
+| [../yolugra/docs](../yolugra/docs) | Business rules, architecture, localization, setup, testing of the whole product. |
 
 ## Prerequisites
 
@@ -50,7 +57,7 @@ docker compose up --build
 | `DATABASE_URL` | PostgreSQL URL (`postgres://` or `postgresql://`). |
 | `JWT_SECRET` | Signing secret. Minimum 16 characters. Unused until auth is added. |
 | `OTP_HMAC_SECRET` | OTP HMAC secret. Minimum 16 characters. Unused until auth is added. |
-| `ADMIN_TOKEN` | Static admin token. Minimum 16 characters. Unused until admin routes are added. |
+| `ADMIN_TOKEN` | Static admin token for `/admin/v1`. Minimum 16 characters. |
 | `MIGRATE_ON_START` | Apply embedded migrations before serving. Default `false`. |
 | `DB_MAX_CONNS` | Pool max connections. Default `10`. |
 | `DB_MIN_CONNS` | Pool min connections. Default `2`. |
@@ -95,7 +102,41 @@ curl -i http://localhost:8080/readyz
 {"status":"ok","database":"up","sms_gateway_healthy":false}
 ```
 
-`sms_gateway_healthy` is informational. It is true only when an active SMS gateway heartbeated within the last 30 seconds. No gateway is configured in Phase A, so the field stays false and the status stays `200`.
+`sms_gateway_healthy` is informational. It is true only when an active SMS gateway heartbeated within the last 30 seconds. No gateway is configured until an admin creates one, so the field stays false and the status stays `200`.
+
+## SMS gateway and OTP
+
+Phone login and the Android SMS gateway are unchanged by the product API; the gateway endpoints and their contract stay as below.
+
+The backend generates the OTP and the SMS text. The phone sends that text unchanged. `sent` means Android's telephony stack accepted the message. A carrier delivery receipt is a separate `delivered` report.
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| POST | `/v1/auth/request-otp` | Public. Body `{phone, device_id}`. `202 {"status":"accepted"}`. `DEV_MODE=true` also returns `dev_code`. |
+| POST | `/v1/auth/verify-otp` | Public. Body `{phone, code, device_id}`. Returns access and refresh tokens. |
+| POST | `/v1/auth/refresh` | Public. Body `{refresh_token, device_id}`. Rotates the refresh token. |
+| POST | `/v1/auth/logout` | Public. Body `{refresh_token}`. |
+| GET | `/gateway/v1/pending?limit=1` | Gateway bearer key. Claims jobs with `FOR UPDATE SKIP LOCKED`. |
+| POST | `/gateway/v1/sending` | Gateway bearer key. Body `{id}`. Call this before `SmsManager`. |
+| POST | `/gateway/v1/report` | Gateway bearer key. Body `{id, status, error, not_submitted}`. `status` is `sent`, `failed`, `unknown`, `delivered`, or `delivery_failed`. |
+| POST | `/gateway/v1/heartbeat` | Gateway bearer key. |
+| POST | `/admin/v1/gateways` | Admin bearer token. Returns `api_key` once. |
+| GET | `/admin/v1/gateways` | Admin bearer token. |
+| POST | `/admin/v1/gateways/{id}/revoke` | Admin bearer token. |
+| GET | `/admin/v1/sms/stats` | Admin bearer token. |
+
+Create a gateway, then paste the key into the Android app:
+
+```bash
+curl -s -X POST http://localhost:8080/admin/v1/gateways \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"pixel\",\"operator_prefixes\":[\"61\",\"62\",\"71\"]}"
+```
+
+A job whose send has started is not returned to the pending pool when its lease expires. That avoids a second SMS when the phone crashed after calling `SmsManager` and before reporting. A lease that expires before `/gateway/v1/sending` is claimed again. Messages older than `OTP_TTL` that were never handed to the radio are failed as `expired`.
+
+Phone numbers must be Turkmenistan mobiles: `+993` and 8 digits, starting with a prefix in `OTP_MOBILE_PREFIXES` (default `6,7`). The SMS text fits in one segment (at most 70 characters, since the Turkmen text is sent as UCS-2), for example `Ýolugra: kod 123456. Kody hiçkim bilen paýlaşmaň!`
 
 If Postgres is down, `/readyz` returns `503`:
 
@@ -107,8 +148,30 @@ A panic returns `500` with `{"error":{"code":"INTERNAL","message":"Internal serv
 
 Stop the server with Ctrl-C. It drains open requests, then closes the database pool.
 
+## Product API
+
+Summary; details in [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md). All need a Bearer access token except `/v1/locations`.
+
+| Area | Endpoints |
+| --- | --- |
+| Profile | `GET/PATCH /v1/me`, `POST/DELETE /v1/me/photo`, `POST /v1/me/phone/request-otp`, `POST /v1/me/phone/verify`, `GET /v1/users/{id}`, `GET /v1/users/{id}/reviews` |
+| Vehicles | `GET/POST /v1/me/vehicles`, `PUT/DELETE /v1/me/vehicles/{id}`, `POST /v1/me/vehicles/{id}/photo` |
+| Locations | `GET /v1/locations` (public, ETag) |
+| Trips | `POST/GET /v1/trips`, `GET/PATCH /v1/trips/{id}`, `POST /v1/trips/{id}/cancel`, `POST /v1/trips/{id}/complete`, `GET /v1/me/trips` |
+| Bookings | `POST/GET /v1/trips/{id}/bookings`, `GET /v1/bookings/{id}`, `POST /v1/bookings/{id}/approve|reject|cancel`, `GET /v1/bookings/{id}/contact`, `GET /v1/me/bookings` |
+| Reviews | `POST /v1/bookings/{id}/review` |
+| Notifications | `GET /v1/me/notifications`, `GET /v1/me/notifications/unread-count`, `POST /v1/me/notifications/read` |
+
+New environment variables: `APP_TIMEZONE` (default `Asia/Ashgabat`), `TRIP_OVERLAP_BUFFER` (`30m`), `TRIP_COMPLETE_GRACE` (`6h`), `TRIP_REMIND_BEFORE` (`2h`), `MEDIA_DIR` (`./media`), `API_RATE_PER_MIN` (`120`).
+
+Integration tests need a disposable database: `make test-integration` (defaults to `carpool_test` on the compose Postgres).
+
 ## Assumptions
 
+- Trip routes cannot change after publication (bookings reference the stops); drivers cancel and republish instead. Schedule, seats, price, comfort and meeting points can change.
+- Bookings are closed once a trip departs, including pickups at later stops.
+- Contact numbers stay visible for completed bookings, so participants can reach each other about the finished trip.
+- Push notifications are not integrated: there is no Firebase project. The inbox plus client polling covers the first version; `device_tokens` and the event table are ready for FCM.
 - Ashgabat is a city with no parent welayat. It is administered separately from Ahal, Balkan, Dashoguz, Lebap, and Mary.
 - The location seed contains those five welayats and these cities: Ashgabat, Anau (Änew), Tejen, Balkanabat, Turkmenbashi, Dashoguz, Turkmenabat, Mary, and Bayramaly. Welayats and those cities are `is_active = true`.
 - Etrap rows are left for `migrations/000003_seed_etraps.up.sql`, which is empty until an official list is added.

@@ -9,10 +9,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+	_ "time/tzdata" // APP_TIMEZONE must resolve on hosts and images without a zoneinfo database
 
 	"github.com/joho/godotenv"
 	"github.com/shalarasgar/carpool-backend/internal/config"
 	"github.com/shalarasgar/carpool-backend/internal/http"
+	"github.com/shalarasgar/carpool-backend/internal/http/middleware"
+	"github.com/shalarasgar/carpool-backend/internal/jobs"
+	"github.com/shalarasgar/carpool-backend/internal/media"
 	appmigrate "github.com/shalarasgar/carpool-backend/internal/migrate"
 	"github.com/shalarasgar/carpool-backend/internal/service"
 	"github.com/shalarasgar/carpool-backend/internal/store"
@@ -55,9 +60,54 @@ func run() error {
 	}
 	defer pool.Close()
 
+	appDB := store.NewAppDB(pool)
+	authSvc := service.NewAuth(appDB, service.AuthConfig{
+		AppName:         cfg.AppName,
+		OTPSecret:       cfg.OTPHMACSecret,
+		JWTSecret:       cfg.JWTSecret,
+		Prefixes:        cfg.MobilePrefixes(),
+		OTPTTL:          cfg.OTPTTL,
+		MaxAttempts:     cfg.OTPMaxAttempts,
+		PhoneInterval:   cfg.OTPPhoneInterval,
+		PhoneDailyMax:   cfg.OTPPhoneDailyMax,
+		IPHourlyMax:     cfg.OTPIPHourlyMax,
+		DeviceHourlyMax: cfg.OTPDeviceHourlyMax,
+		AccessTTL:       cfg.AccessTokenTTL,
+		RefreshTTL:      cfg.RefreshTokenTTL,
+		ReturnDevCode:   cfg.DevMode,
+		TestPhones:      cfg.TestPhones(),
+	}, logger)
+	gatewaySvc := service.NewGateway(appDB, service.GatewayConfig{
+		Lease:         cfg.SMSLease,
+		SendingLease:  cfg.SMSSendingLease,
+		MaxAttempts:   cfg.SMSMaxAttempts,
+		MessageMaxAge: cfg.OTPTTL,
+		RatePerMinute: cfg.GatewayRatePerMin,
+	}, logger)
+	go jobs.NewReaper(gatewaySvc, 15*time.Second, logger).Run(ctx)
+
+	tripSvc := service.NewTrips(appDB, service.TripConfig{
+		OverlapBuffer: cfg.TripOverlapBuffer,
+		TimeZone:      cfg.TimeZone,
+		CompleteGrace: cfg.TripCompleteGrace,
+		RemindBefore:  cfg.TripRemindBefore,
+	}, logger)
+	go jobs.NewReaper(tripSvc, time.Minute, logger.With("job", "trip_lifecycle")).Run(ctx)
+
 	router := server.NewRouter(server.Deps{
-		Logger: logger,
-		Health: service.NewHealth(store.NewReadiness(pool), logger),
+		Logger:     logger,
+		Health:     service.NewHealth(store.NewReadiness(pool), logger),
+		Auth:       authSvc,
+		Gateway:    gatewaySvc,
+		AdminToken: cfg.AdminToken,
+		DevMode:    cfg.DevMode,
+		JWTSecret:  cfg.JWTSecret,
+		Users:      appDB,
+		Profiles:   service.NewProfiles(appDB, media.Disk{Dir: cfg.MediaDir}, authSvc, logger),
+		Trips:      tripSvc,
+		Bookings:   service.NewBookings(appDB),
+		Limiter:    &middleware.WindowLimiter{Max: cfg.APIRatePerMin, Window: time.Minute},
+		MediaDir:   cfg.MediaDir,
 	})
 
 	srv := &http.Server{

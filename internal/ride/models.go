@@ -558,3 +558,18 @@ type Event struct {
 	ActorID   string
 	DedupeKey string
 }
+
+// PushJob is an inbox row claimed for push delivery, with what its text needs in the
+// recipient's language and the recipient's device tokens.
+type PushJob struct {
+	NotificationID string
+	Type           NotificationType
+	TripID         string
+	BookingID      string
+	CreatedAt      time.Time
+	Locale         string
+	From           *Location
+	To             *Location
+	Actor          *UserSummary
+	Tokens         []string
+}

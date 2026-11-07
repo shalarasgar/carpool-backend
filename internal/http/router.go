@@ -27,8 +27,10 @@ type Deps struct {
 	Profiles  *service.Profiles
 	Trips     *service.Trips
 	Bookings  *service.Bookings
-	Limiter   middleware.Limiter
-	MediaDir  string
+	// PushTokens mounts device registration. Nil leaves the routes out.
+	PushTokens *service.PushTokens
+	Limiter    middleware.Limiter
+	MediaDir   string
 }
 
 // NewRouter returns the application router.
@@ -121,6 +123,11 @@ func mountProduct(r chi.Router, deps Deps, logger *slog.Logger) {
 		r.Get("/me/notifications", trips.Notifications)
 		r.Get("/me/notifications/unread-count", trips.UnreadCount)
 		r.Post("/me/notifications/read", trips.MarkRead)
+		if deps.PushTokens != nil {
+			push := handlers.Push{Logger: logger, Tokens: deps.PushTokens}
+			r.Put("/me/push-token", push.Register)
+			r.Delete("/me/push-token", push.Unregister)
+		}
 
 		r.Get("/users/{id}", me.User)
 		r.Get("/users/{id}/reviews", trips.UserReviews)

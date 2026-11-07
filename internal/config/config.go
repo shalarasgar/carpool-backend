@@ -62,7 +62,16 @@ type Config struct {
 	TripRemindBefore  time.Duration `envconfig:"TRIP_REMIND_BEFORE" default:"2h"`
 	MediaDir          string        `envconfig:"MEDIA_DIR" default:"./media"`
 	APIRatePerMin     int           `envconfig:"API_RATE_PER_MIN" default:"120"`
+
+	// Push notifications. An empty FCM_CREDENTIALS_FILE turns pushes off; the inbox works either way.
+	FCMCredentialsFile string        `envconfig:"FCM_CREDENTIALS_FILE"`
+	PushInterval       time.Duration `envconfig:"PUSH_INTERVAL" default:"3s"`
+	PushMaxAge         time.Duration `envconfig:"PUSH_MAX_AGE" default:"30m"`
+	PushTokenTTL       time.Duration `envconfig:"PUSH_TOKEN_TTL" default:"1440h"`
 }
+
+// PushEnabled reports whether FCM credentials are configured.
+func (c Config) PushEnabled() bool { return strings.TrimSpace(c.FCMCredentialsFile) != "" }
 
 // Load reads configuration from the environment.
 func Load() (Config, error) {
@@ -94,6 +103,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("db_max_conn_idle_time", c.DBMaxConnIdleTime),
 		slog.Duration("db_health_check_period", c.DBHealthCheckPeriod),
 		slog.Int("otp_test_phones", len(c.TestPhones())),
+		slog.Bool("push_enabled", c.PushEnabled()),
 	)
 }
 
@@ -154,6 +164,9 @@ func (c Config) validate() error {
 	}
 	if c.APIRatePerMin < 1 || strings.TrimSpace(c.MediaDir) == "" {
 		return fmt.Errorf("API_RATE_PER_MIN must be positive and MEDIA_DIR is required")
+	}
+	if c.PushInterval <= 0 || c.PushMaxAge < 0 || c.PushTokenTTL < 0 {
+		return fmt.Errorf("PUSH_INTERVAL must be positive and push ages must not be negative")
 	}
 	if _, err := splitPrefixes(c.OTPMobilePrefixes); err != nil {
 		return err

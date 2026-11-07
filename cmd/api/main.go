@@ -19,6 +19,7 @@ import (
 	"github.com/shalarasgar/carpool-backend/internal/jobs"
 	"github.com/shalarasgar/carpool-backend/internal/media"
 	appmigrate "github.com/shalarasgar/carpool-backend/internal/migrate"
+	"github.com/shalarasgar/carpool-backend/internal/push"
 	"github.com/shalarasgar/carpool-backend/internal/service"
 	"github.com/shalarasgar/carpool-backend/internal/store"
 )
@@ -94,6 +95,22 @@ func run() error {
 	}, logger)
 	go jobs.NewReaper(tripSvc, time.Minute, logger.With("job", "trip_lifecycle")).Run(ctx)
 
+	if cfg.PushEnabled() {
+		fcm, err := push.LoadFCM(cfg.FCMCredentialsFile)
+		if err != nil {
+			return err
+		}
+		dispatcher := push.NewDispatcher(appDB, fcm, push.Config{
+			Title:    cfg.AppName,
+			MaxAge:   cfg.PushMaxAge,
+			TokenTTL: cfg.PushTokenTTL,
+		}, logger.With("job", "push"))
+		go jobs.NewReaper(dispatcher, cfg.PushInterval, logger.With("job", "push")).Run(ctx)
+		logger.Info("push notifications enabled", "firebase_project", fcm.ProjectID())
+	} else {
+		logger.Info("push notifications disabled: FCM_CREDENTIALS_FILE is not set")
+	}
+
 	router := server.NewRouter(server.Deps{
 		Logger:     logger,
 		Health:     service.NewHealth(store.NewReadiness(pool), logger),
@@ -106,6 +123,7 @@ func run() error {
 		Profiles:   service.NewProfiles(appDB, media.Disk{Dir: cfg.MediaDir}, authSvc, logger),
 		Trips:      tripSvc,
 		Bookings:   service.NewBookings(appDB),
+		PushTokens: service.NewPushTokens(appDB),
 		Limiter:    &middleware.WindowLimiter{Max: cfg.APIRatePerMin, Window: time.Minute},
 		MediaDir:   cfg.MediaDir,
 	})

@@ -3,6 +3,9 @@
 .env.local
 *.pem
 *.key
+/secrets/
+*service-account*.json
+*firebase-adminsdk*.json
 
 # Go
 /bin/

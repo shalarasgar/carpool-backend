@@ -41,6 +41,7 @@ var rideErrors = []struct {
 	{ride.ErrLocationInactive, http.StatusUnprocessableEntity, "LOCATION_INACTIVE"},
 	{ride.ErrContactUnavailable, http.StatusForbidden, "CONTACT_UNAVAILABLE"},
 	{ride.ErrUserBlocked, http.StatusForbidden, "USER_UNAVAILABLE"},
+	{ride.ErrTripInProgress, http.StatusConflict, "TRIP_IN_PROGRESS"},
 	{media.ErrTooLarge, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE"},
 	{media.ErrUnsupported, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA"},
 	{auth.ErrInvalidPhone, http.StatusUnprocessableEntity, "INVALID_PHONE"},
@@ -135,11 +136,13 @@ type userSummaryDTO struct {
 	RatingAvg      float64 `json:"rating_avg"`
 	RatingCount    int     `json:"rating_count"`
 	CompletedTrips int     `json:"completed_trips"`
+	// Deleted is true for an erased account; its name and photo are empty.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 func toSummary(u ride.UserSummary) userSummaryDTO {
 	return userSummaryDTO{ID: u.ID, FirstName: u.FirstName, LastName: u.LastName, PhotoURL: u.PhotoURL,
-		RatingAvg: u.RatingAvg, RatingCount: u.RatingCount, CompletedTrips: u.TripsAsDriver}
+		RatingAvg: u.RatingAvg, RatingCount: u.RatingCount, CompletedTrips: u.TripsAsDriver, Deleted: u.Deleted}
 }
 
 type profileDTO struct {

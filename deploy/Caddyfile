@@ -1,0 +1,24 @@
+# Caddy obtains and renews Let's Encrypt certificates for both names on its own.
+# Both DNS A records must point at this server before the first start.
+
+{$API_DOMAIN} {
+	encode zstd gzip
+	# Photo uploads are capped at 5 MB by the API; leave room for the multipart envelope.
+	request_body {
+		max_size 6MB
+	}
+	# Caddy replaces any client-sent X-Forwarded-For with the real peer address,
+	# so the API's TRUST_PROXY reads an address the client cannot forge.
+	reverse_proxy api:8080
+}
+
+# Public site (privacy policy, account deletion). Copy ../website/public into ./site.
+{$SITE_DOMAIN} {
+	encode zstd gzip
+	root * /srv/site
+	file_server
+}
+
+www.{$SITE_DOMAIN} {
+	redir https://{$SITE_DOMAIN}{uri} permanent
+}

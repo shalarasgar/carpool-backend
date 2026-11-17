@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/shalarasgar/carpool-backend/internal/auth"
 	"github.com/shalarasgar/carpool-backend/internal/media"
@@ -24,6 +25,8 @@ type ProfileStore interface {
 	DeleteVehicle(ctx context.Context, userID, id string) error
 	SetVehiclePhoto(ctx context.Context, userID, id, url string) (string, error)
 	Locations(ctx context.Context) ([]ride.Location, error)
+	DeleteAccount(ctx context.Context, userID string, now time.Time) (mediaURLs []string, err error)
+	UserIDByPhone(ctx context.Context, phone string) (string, error)
 }
 
 // PhoneVerifier is the part of the OTP flow a phone change reuses.
@@ -39,6 +42,7 @@ type Profiles struct {
 	media  media.Storage
 	otp    PhoneVerifier
 	logger *slog.Logger
+	now    func() time.Time
 }
 
 // NewProfiles returns the profile service. logger may be nil.
@@ -46,7 +50,7 @@ func NewProfiles(store ProfileStore, storage media.Storage, otp PhoneVerifier, l
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Profiles{store: store, media: storage, otp: otp, logger: logger}
+	return &Profiles{store: store, media: storage, otp: otp, logger: logger, now: time.Now}
 }
 
 // Me returns the caller's own profile, including the phone number.
@@ -127,6 +131,35 @@ func (p *Profiles) ConfirmPhoneChange(ctx context.Context, userID, phoneRaw, cod
 		return ride.Profile{}, err
 	}
 	return p.store.ChangePhone(ctx, userID, spec)
+}
+
+// DeleteAccount erases the caller's account: personal data, vehicles, sessions, and open
+// trips and bookings. It fails with ride.ErrTripInProgress while a trip the caller drives
+// is under way. Photo files are removed after the database change commits; a file that
+// cannot be removed is logged and does not undo the deletion.
+func (p *Profiles) DeleteAccount(ctx context.Context, userID string) error {
+	files, err := p.store.DeleteAccount(ctx, userID, p.now())
+	if err != nil {
+		return err
+	}
+	for _, url := range files {
+		p.dropFile(ctx, url)
+	}
+	return nil
+}
+
+// DeleteAccountByPhone erases the account that owns a phone number. An operator uses it
+// for a deletion request received outside the app.
+func (p *Profiles) DeleteAccountByPhone(ctx context.Context, phoneRaw string) error {
+	phone, err := p.otp.NormalizePhone(phoneRaw)
+	if err != nil {
+		return err
+	}
+	userID, err := p.store.UserIDByPhone(ctx, phone)
+	if err != nil {
+		return err
+	}
+	return p.DeleteAccount(ctx, userID)
 }
 
 // Vehicles lists the caller's vehicles.

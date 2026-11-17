@@ -93,6 +93,67 @@ func TestConfigLogValueOmitsSecrets(t *testing.T) {
 	}
 }
 
+func TestReviewLogin(t *testing.T) {
+	cases := []struct {
+		name, phone, code string
+		wantPhone         string
+		wantErr           bool
+	}{
+		{name: "off by default"},
+		{name: "normalized", phone: "993 62 00-00-01", code: "482915", wantPhone: "+99362000001"},
+		{name: "phone without code", phone: "+99362000001", wantErr: true},
+		{name: "code without phone", code: "482915", wantErr: true},
+		{name: "not a mobile number", phone: "+99312000001", code: "482915", wantErr: true},
+		{name: "short code", phone: "+99362000001", code: "1234", wantErr: true},
+		{name: "code with letters", phone: "+99362000001", code: "12a456", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setConfigEnv(t)
+			t.Setenv("OTP_REVIEW_PHONE", tc.phone)
+			t.Setenv("OTP_REVIEW_CODE", tc.code)
+
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() error = nil, want a review login error")
+				}
+				if strings.Contains(err.Error(), tc.code) && tc.code != "" {
+					t.Fatalf("the error repeats the code: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			phone, code := cfg.ReviewLogin()
+			if phone != tc.wantPhone || code != tc.code {
+				t.Fatalf("ReviewLogin() = %q, %q", phone, code)
+			}
+		})
+	}
+}
+
+// The log line of the configuration says whether the review login is on, never its values.
+func TestReviewLoginIsNotLogged(t *testing.T) {
+	setConfigEnv(t)
+	t.Setenv("OTP_REVIEW_PHONE", "+99362000001")
+	t.Setenv("OTP_REVIEW_CODE", "482915")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("starting", "config", cfg)
+	out := buf.String()
+	if strings.Contains(out, "482915") || strings.Contains(out, "62000001") {
+		t.Fatalf("log line leaks the review login: %s", out)
+	}
+	if !strings.Contains(out, `"otp_review_login":true`) {
+		t.Fatalf("log line does not say the review login is on: %s", out)
+	}
+}
+
 func setConfigEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("APP_NAME", "carpool-test")

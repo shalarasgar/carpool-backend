@@ -581,33 +581,39 @@ func (db *AppDB) CancelTrip(ctx context.Context, driverID, tripID string, now ti
 		if t.DriverID != driverID {
 			return ride.ErrForbidden
 		}
-		if t.Status == ride.TripCancelled {
-			return nil
-		}
-		if t.Status == ride.TripInProgress || (t.Status.Bookable() && !t.DepartsAt.After(now)) {
-			return ride.ErrTripStarted
-		}
-		if !ride.CanTransitionTrip(t.Status, ride.TripCancelled) {
-			return ride.ErrTripNotActive
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE trips SET status = 'cancelled', cancelled_at = $2 WHERE id = $1::uuid
-		`, tripID, now); err != nil {
-			return dbErr("cancel trip", err)
-		}
-		// Notify before the bookings change status, so the passenger set is still visible.
-		if err := notifyPassengers(ctx, tx, tripID, ride.NoteTripCancelled, driverID,
-			"trip_cancelled:"+tripID, []ride.BookingStatus{ride.BookingPending, ride.BookingApproved}); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE bookings SET status = 'cancelled_by_driver', cancelled_at = $2
-			WHERE trip_id = $1::uuid AND status IN ('pending', 'approved')
-		`, tripID, now); err != nil {
-			return dbErr("cancel trip bookings", err)
-		}
-		return nil
+		return cancelLockedTrip(ctx, tx, t, now)
 	})
+}
+
+// cancelLockedTrip cancels t and its open bookings for its driver. The caller holds the
+// trip lock.
+func cancelLockedTrip(ctx context.Context, tx pgx.Tx, t lockedTrip, now time.Time) error {
+	if t.Status == ride.TripCancelled {
+		return nil
+	}
+	if t.Status == ride.TripInProgress || (t.Status.Bookable() && !t.DepartsAt.After(now)) {
+		return ride.ErrTripStarted
+	}
+	if !ride.CanTransitionTrip(t.Status, ride.TripCancelled) {
+		return ride.ErrTripNotActive
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE trips SET status = 'cancelled', cancelled_at = $2 WHERE id = $1::uuid
+	`, t.ID, now); err != nil {
+		return dbErr("cancel trip", err)
+	}
+	// Notify before the bookings change status, so the passenger set is still visible.
+	if err := notifyPassengers(ctx, tx, t.ID, ride.NoteTripCancelled, t.DriverID,
+		"trip_cancelled:"+t.ID, []ride.BookingStatus{ride.BookingPending, ride.BookingApproved}); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE bookings SET status = 'cancelled_by_driver', cancelled_at = $2
+		WHERE trip_id = $1::uuid AND status IN ('pending', 'approved')
+	`, t.ID, now); err != nil {
+		return dbErr("cancel trip bookings", err)
+	}
+	return nil
 }
 
 // CompleteTrip lets the driver close a trip after departure. A repeated call is a no-op.

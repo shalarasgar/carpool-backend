@@ -36,17 +36,22 @@ func (db *AppDB) inTx(ctx context.Context, op string, fn func(tx pgx.Tx) error) 
 // summarySelect is the public user columns shared by every embedded user.
 const summarySelect = `
 	u.id::text, u.first_name, u.last_name, COALESCE(u.photo_url, ''), u.rating_avg::float8, u.rating_count,
-	(SELECT COUNT(*) FROM trips ct WHERE ct.driver_id = u.id AND ct.status = 'completed')::int`
+	(SELECT COUNT(*) FROM trips ct WHERE ct.driver_id = u.id AND ct.status = 'completed')::int,
+	u.deleted_at IS NOT NULL`
 
 func scanSummary(dst *ride.UserSummary) []any {
-	return []any{&dst.ID, &dst.FirstName, &dst.LastName, &dst.PhotoURL, &dst.RatingAvg, &dst.RatingCount, &dst.TripsAsDriver}
+	return []any{&dst.ID, &dst.FirstName, &dst.LastName, &dst.PhotoURL, &dst.RatingAvg, &dst.RatingCount,
+		&dst.TripsAsDriver, &dst.Deleted}
 }
 
-// ActiveUser reports whether an access token subject may still use the API.
+// ActiveUser reports whether an access token subject may still use the API. A deleted
+// account is rejected like an unknown one, so its access tokens stop working at once.
 func (db *AppDB) ActiveUser(ctx context.Context, id string) error {
-	var blocked bool
-	err := db.pool.QueryRow(ctx, `SELECT is_blocked FROM users WHERE id = $1::uuid`, id).Scan(&blocked)
-	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+	var blocked, deleted bool
+	err := db.pool.QueryRow(ctx, `
+		SELECT is_blocked, deleted_at IS NOT NULL FROM users WHERE id = $1::uuid
+	`, id).Scan(&blocked, &deleted)
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) || (err == nil && deleted) {
 		return auth.ErrUnauthorized
 	}
 	if err != nil {
@@ -59,11 +64,14 @@ func (db *AppDB) ActiveUser(ctx context.Context, id string) error {
 }
 
 const profileSelect = `
-SELECT u.id::text, u.phone, u.first_name, u.last_name, COALESCE(u.bio, ''), COALESCE(u.photo_url, ''),
+SELECT u.id::text, COALESCE(u.phone, ''), u.first_name, u.last_name, COALESCE(u.bio, ''), COALESCE(u.photo_url, ''),
        u.locale, u.rating_avg::float8, u.rating_count, u.created_at,
        (SELECT COUNT(*) FROM trips t WHERE t.driver_id = u.id AND t.status = 'completed')::int,
        (SELECT COUNT(*) FROM bookings b WHERE b.passenger_id = u.id AND b.status = 'completed')::int
 FROM users u`
+
+// liveUser selects one account that is neither blocked nor deleted.
+const liveUser = ` WHERE u.id = $1::uuid AND NOT u.is_blocked AND u.deleted_at IS NULL`
 
 func scanProfile(row pgx.Row) (ride.Profile, error) {
 	var p ride.Profile
@@ -80,7 +88,7 @@ func scanProfile(row pgx.Row) (ride.Profile, error) {
 
 // Profile loads a user with private fields. Callers must only return it to its owner.
 func (db *AppDB) Profile(ctx context.Context, id string) (ride.Profile, error) {
-	return scanProfile(db.pool.QueryRow(ctx, profileSelect+` WHERE u.id = $1::uuid AND NOT u.is_blocked`, id))
+	return scanProfile(db.pool.QueryRow(ctx, profileSelect+liveUser, id))
 }
 
 // UpdateProfile applies a validated patch and keeps the legacy name column in sync.
@@ -123,7 +131,7 @@ func (db *AppDB) SetUserPhoto(ctx context.Context, id, url string) (string, erro
 
 // PublicProfile loads a user for another viewer. The phone is cleared.
 func (db *AppDB) PublicProfile(ctx context.Context, id string) (ride.Profile, error) {
-	p, err := scanProfile(db.pool.QueryRow(ctx, profileSelect+` WHERE u.id = $1::uuid AND NOT u.is_blocked`, id))
+	p, err := scanProfile(db.pool.QueryRow(ctx, profileSelect+liveUser, id))
 	if err != nil {
 		return ride.Profile{}, err
 	}
@@ -180,7 +188,8 @@ func (db *AppDB) PhoneInUse(ctx context.Context, phone, exceptUserID string) (bo
 func lockProfile(ctx context.Context, tx pgx.Tx, id string) (ride.Profile, error) {
 	var p ride.Profile
 	err := tx.QueryRow(ctx, `
-		SELECT id::text, first_name, last_name FROM users WHERE id = $1::uuid AND NOT is_blocked FOR UPDATE
+		SELECT id::text, first_name, last_name FROM users
+		WHERE id = $1::uuid AND NOT is_blocked AND deleted_at IS NULL FOR UPDATE
 	`, id).Scan(&p.ID, &p.FirstName, &p.LastName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ride.Profile{}, ride.ErrNotFound

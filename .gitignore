@@ -23,4 +23,9 @@ coverage.*
 .vscode/
 .DS_Store
 Thumbs.db
-media/
+
+# Uploaded photos (MEDIA_DIR). Anchored to the root so internal/media stays tracked.
+/media/
+
+# Production deployment: built site copied onto the server
+/deploy/site/

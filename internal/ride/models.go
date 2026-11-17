@@ -71,6 +71,9 @@ type UserSummary struct {
 	RatingAvg     float64
 	RatingCount   int
 	TripsAsDriver int
+	// Deleted marks an erased account. Its name and photo are empty; clients show a
+	// placeholder such as "Deleted user".
+	Deleted bool
 }
 
 // Vehicle is a car owned by a user. PassengerSeats excludes the driver's seat.

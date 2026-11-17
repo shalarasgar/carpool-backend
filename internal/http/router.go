@@ -20,6 +20,9 @@ type Deps struct {
 	Gateway    *service.Gateway
 	AdminToken string
 	DevMode    bool
+	// TrustProxy takes the client address from X-Forwarded-For. Set it only
+	// when the API is reachable through a reverse proxy and nothing else.
+	TrustProxy bool
 
 	// Product API. When Profiles is nil the product routes are not mounted.
 	JWTSecret string
@@ -29,6 +32,8 @@ type Deps struct {
 	Bookings  *service.Bookings
 	// PushTokens mounts device registration. Nil leaves the routes out.
 	PushTokens *service.PushTokens
+	// Moderation mounts blocks and reports, and their admin routes. Nil leaves them out.
+	Moderation *service.Moderation
 	Limiter    middleware.Limiter
 	MediaDir   string
 }
@@ -41,6 +46,9 @@ func NewRouter(deps Deps) http.Handler {
 	}
 
 	r := chi.NewRouter()
+	if deps.TrustProxy {
+		r.Use(middleware.ForwardedFor)
+	}
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger(logger))
 	r.Use(middleware.Recover(logger))
@@ -72,19 +80,37 @@ func NewRouter(deps Deps) http.Handler {
 			r.Post("/sending", gw.Sending)
 			r.Post("/heartbeat", gw.Heartbeat)
 		})
-		admin := handlers.Admin{Logger: logger, Service: deps.Gateway}
+	}
+	if deps.Gateway != nil || deps.Moderation != nil {
 		r.Route("/admin/v1", func(r chi.Router) {
 			r.Use(middleware.AdminAuth(deps.AdminToken))
-			r.Post("/gateways", admin.CreateGateway)
-			r.Get("/gateways", admin.ListGateways)
-			r.Post("/gateways/{id}/revoke", admin.RevokeGateway)
-			r.Get("/sms/stats", admin.Stats)
+			mountAdmin(r, deps, logger)
 		})
 	}
 	if deps.Profiles != nil {
 		mountProduct(r, deps, logger)
 	}
 	return r
+}
+
+func mountAdmin(r chi.Router, deps Deps, logger *slog.Logger) {
+	if deps.Gateway != nil {
+		admin := handlers.Admin{Logger: logger, Service: deps.Gateway}
+		r.Post("/gateways", admin.CreateGateway)
+		r.Get("/gateways", admin.ListGateways)
+		r.Post("/gateways/{id}/revoke", admin.RevokeGateway)
+		r.Get("/sms/stats", admin.Stats)
+	}
+	if deps.Moderation != nil {
+		users := handlers.AdminUsers{Logger: logger, Moderation: deps.Moderation, Profiles: deps.Profiles}
+		r.Get("/reports", users.Reports)
+		r.Post("/reports/{id}/resolve", users.ResolveReport)
+		r.Post("/users/{id}/block", users.BlockUser)
+		r.Post("/users/{id}/unblock", users.UnblockUser)
+		if deps.Profiles != nil {
+			r.Post("/users/delete", users.DeleteAccount)
+		}
+	}
 }
 
 func mountProduct(r chi.Router, deps Deps, logger *slog.Logger) {
@@ -109,6 +135,7 @@ func mountProduct(r chi.Router, deps Deps, logger *slog.Logger) {
 
 		r.Get("/me", me.Get)
 		r.Patch("/me", me.Patch)
+		r.Delete("/me", me.Delete)
 		r.Post("/me/photo", me.UploadPhoto)
 		r.Delete("/me/photo", me.DeletePhoto)
 		r.Post("/me/phone/request-otp", me.RequestPhoneChange)
@@ -131,6 +158,13 @@ func mountProduct(r chi.Router, deps Deps, logger *slog.Logger) {
 
 		r.Get("/users/{id}", me.User)
 		r.Get("/users/{id}/reviews", trips.UserReviews)
+		if deps.Moderation != nil {
+			mod := handlers.Moderation{Logger: logger, Service: deps.Moderation}
+			r.Get("/me/blocks", mod.Blocked)
+			r.Post("/users/{id}/block", mod.Block)
+			r.Delete("/users/{id}/block", mod.Unblock)
+			r.Post("/reports", mod.Report)
+		}
 
 		r.Post("/trips", trips.Create)
 		r.Get("/trips", trips.Search)

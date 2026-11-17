@@ -26,6 +26,7 @@ var messages = map[string][3]string{ // tk, ru, en
 	"PHONE_TAKEN":          {"Bu belgi başga hasapda ulanylýar", "Этот номер уже используется", "This number is already in use"},
 	"LOCATION_INACTIVE":    {"Ýer elýeterli däl", "Населённый пункт недоступен", "The location is not available"},
 	"CONTACT_UNAVAILABLE":  {"Telefon belgisi diňe tassyklanandan soň görünýär", "Номер доступен только после подтверждения", "The phone number is shown only after approval"},
+	"TRIP_IN_PROGRESS":     {"Ilki dowam edýän syýahatyňyzy tamamlaň", "Сначала завершите текущую поездку", "Complete your trip in progress first"},
 	"USER_UNAVAILABLE":     {"Bu ulanyjy bilen syýahat edip bolmaýar", "Поездка с этим пользователем недоступна", "You cannot travel with this user"},
 	"FILE_TOO_LARGE":       {"Faýl gaty uly", "Файл слишком большой", "The file is too large"},
 	"UNSUPPORTED_MEDIA":    {"Diňe JPEG, PNG ýa-da WebP suratlar", "Только изображения JPEG, PNG или WebP", "Only JPEG, PNG, or WebP images"},

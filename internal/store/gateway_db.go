@@ -49,48 +49,33 @@ func (db *AppDB) CreateChallenge(ctx context.Context, in auth.Challenge) (auth.C
 		return auth.ChallengeResult{}, dbErr("insert otp", err)
 	}
 
-	gateways, err := listGateways(ctx, tx)
-	if err != nil {
-		return auth.ChallengeResult{}, err
-	}
-	gatewayID, ok := smsqueue.ChooseGateway(in.Phone, gateways, in.Now)
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO sms_queue (phone, message, gateway_id)
-		VALUES ($1, $2, NULLIF($3, '')::uuid)
-	`, in.Phone, in.Message, gatewayID); err != nil {
-		return auth.ChallengeResult{}, dbErr("insert sms", err)
+	healthy := true
+	if !in.NoSMS {
+		gateways, err := listGateways(ctx, tx)
+		if err != nil {
+			return auth.ChallengeResult{}, err
+		}
+		var gatewayID string
+		gatewayID, healthy = smsqueue.ChooseGateway(in.Phone, gateways, in.Now)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO sms_queue (phone, message, gateway_id)
+			VALUES ($1, $2, NULLIF($3, '')::uuid)
+		`, in.Phone, in.Message, gatewayID); err != nil {
+			return auth.ChallengeResult{}, dbErr("insert sms", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return auth.ChallengeResult{}, dbErr("commit challenge", err)
 	}
-	return auth.ChallengeResult{NoHealthyGateway: !ok}, nil
+	return auth.ChallengeResult{NoHealthyGateway: !healthy}, nil
 }
 
 func enforceOTPLimits(ctx context.Context, tx pgx.Tx, in auth.Challenge) error {
-	var sinceLast *time.Time
-	err := tx.QueryRow(ctx, `
-		SELECT created_at FROM otp_codes WHERE phone = $1 ORDER BY created_at DESC LIMIT 1
-	`, in.Phone).Scan(&sinceLast)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return dbErr("latest otp", err)
+	if !in.SkipPhoneLimits {
+		if err := enforcePhoneLimits(ctx, tx, in); err != nil {
+			return err
+		}
 	}
-	if sinceLast != nil && in.Now.Sub(*sinceLast) < in.PhoneInterval {
-		return &smsqueue.RateLimited{RetryAfter: in.PhoneInterval - in.Now.Sub(*sinceLast)}
-	}
-
-	var daily int
-	var oldestDaily *time.Time
-	if err := tx.QueryRow(ctx, `
-		SELECT COUNT(*), MIN(created_at)
-		FROM otp_codes
-		WHERE phone = $1 AND created_at > $2
-	`, in.Phone, in.Now.Add(-24*time.Hour)).Scan(&daily, &oldestDaily); err != nil {
-		return dbErr("daily otp", err)
-	}
-	if daily >= in.PhoneDailyMax && oldestDaily != nil {
-		return &smsqueue.RateLimited{RetryAfter: oldestDaily.Add(24 * time.Hour).Sub(in.Now)}
-	}
-
 	if in.IP != "" {
 		var ipCount int
 		var oldestIP *time.Time
@@ -116,6 +101,33 @@ func enforceOTPLimits(ctx context.Context, tx pgx.Tx, in auth.Challenge) error {
 		if deviceCount >= in.DeviceHourlyMax && oldestDevice != nil {
 			return &smsqueue.RateLimited{RetryAfter: oldestDevice.Add(time.Hour).Sub(in.Now)}
 		}
+	}
+	return nil
+}
+
+func enforcePhoneLimits(ctx context.Context, tx pgx.Tx, in auth.Challenge) error {
+	var sinceLast *time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT created_at FROM otp_codes WHERE phone = $1 ORDER BY created_at DESC LIMIT 1
+	`, in.Phone).Scan(&sinceLast)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return dbErr("latest otp", err)
+	}
+	if sinceLast != nil && in.Now.Sub(*sinceLast) < in.PhoneInterval {
+		return &smsqueue.RateLimited{RetryAfter: in.PhoneInterval - in.Now.Sub(*sinceLast)}
+	}
+
+	var daily int
+	var oldestDaily *time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*), MIN(created_at)
+		FROM otp_codes
+		WHERE phone = $1 AND created_at > $2
+	`, in.Phone, in.Now.Add(-24*time.Hour)).Scan(&daily, &oldestDaily); err != nil {
+		return dbErr("daily otp", err)
+	}
+	if daily >= in.PhoneDailyMax && oldestDaily != nil {
+		return &smsqueue.RateLimited{RetryAfter: oldestDaily.Add(24 * time.Hour).Sub(in.Now)}
 	}
 	return nil
 }

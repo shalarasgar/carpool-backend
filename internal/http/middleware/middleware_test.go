@@ -107,3 +107,38 @@ func TestLoggerRecordsStatus(t *testing.T) {
 		t.Fatalf("log = %s", buf.String())
 	}
 }
+
+func TestForwardedForUsesLastEntry(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		headers []string
+		want    string
+	}{
+		{"no header keeps peer", nil, "10.0.0.2:5555"},
+		{"single entry", []string{"203.0.113.7"}, "203.0.113.7:0"},
+		{"forged prefix ignored", []string{"1.1.1.1, 203.0.113.7"}, "203.0.113.7:0"},
+		{"last header line wins", []string{"1.1.1.1", "198.51.100.4"}, "198.51.100.4:0"},
+		{"ipv6", []string{"2001:db8::1"}, "[2001:db8::1]:0"},
+		{"garbage keeps peer", []string{"not-an-ip"}, "10.0.0.2:5555"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got string
+			handler := ForwardedFor(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				got = r.RemoteAddr
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = "10.0.0.2:5555"
+			for _, h := range tc.headers {
+				req.Header.Add("X-Forwarded-For", h)
+			}
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			if got != tc.want {
+				t.Fatalf("RemoteAddr = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

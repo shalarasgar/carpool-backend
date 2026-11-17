@@ -36,6 +36,16 @@ func (db *AppDB) CreateReview(ctx context.Context, in ride.ReviewInput) (string,
 		if ride.BookingStatus(status) != ride.BookingCompleted {
 			return ride.ErrReviewNotAllowed
 		}
+		// A deleted account has no profile to rate.
+		var gone bool
+		if err := tx.QueryRow(ctx, `
+			SELECT deleted_at IS NOT NULL FROM users WHERE id = $1::uuid
+		`, target).Scan(&gone); err != nil {
+			return dbErr("review target", err)
+		}
+		if gone {
+			return ride.ErrReviewNotAllowed
+		}
 		err = tx.QueryRow(ctx, `
 			INSERT INTO reviews (trip_id, booking_id, from_user_id, to_user_id, rating, comment)
 			VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, NULLIF($6, ''))

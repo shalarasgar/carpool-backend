@@ -145,9 +145,16 @@ type Challenge struct {
 	DeviceHourlyMax int
 	// SkipLimits is set for the configured test numbers (OTP_TEST_PHONES).
 	SkipLimits bool
+	// SkipPhoneLimits lifts only the per-phone interval and daily quota. The per-IP and
+	// per-device quotas still apply, so the fixed review code cannot be guessed at will.
+	SkipPhoneLimits bool
+	// NoSMS stores the code without queueing a message. The review login uses it: its
+	// code is fixed and known in advance, and the number may not be able to receive SMS.
+	NoSMS bool
 }
 
 // ChallengeResult reports whether the SMS was pinned to a live gateway.
+// NoHealthyGateway is false when no SMS was queued.
 type ChallengeResult struct {
 	NoHealthyGateway bool
 }

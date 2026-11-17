@@ -8,3 +8,6 @@ tmp
 uploads
 *.md
 docs
+secrets
+deploy
+media

@@ -62,6 +62,7 @@ func run() error {
 	defer pool.Close()
 
 	appDB := store.NewAppDB(pool)
+	reviewPhone, reviewCode := cfg.ReviewLogin()
 	authSvc := service.NewAuth(appDB, service.AuthConfig{
 		AppName:         cfg.AppName,
 		OTPSecret:       cfg.OTPHMACSecret,
@@ -77,6 +78,8 @@ func run() error {
 		RefreshTTL:      cfg.RefreshTokenTTL,
 		ReturnDevCode:   cfg.DevMode,
 		TestPhones:      cfg.TestPhones(),
+		ReviewPhone:     reviewPhone,
+		ReviewCode:      reviewCode,
 	}, logger)
 	gatewaySvc := service.NewGateway(appDB, service.GatewayConfig{
 		Lease:         cfg.SMSLease,
@@ -118,12 +121,14 @@ func run() error {
 		Gateway:    gatewaySvc,
 		AdminToken: cfg.AdminToken,
 		DevMode:    cfg.DevMode,
+		TrustProxy: cfg.TrustProxy,
 		JWTSecret:  cfg.JWTSecret,
 		Users:      appDB,
 		Profiles:   service.NewProfiles(appDB, media.Disk{Dir: cfg.MediaDir}, authSvc, logger),
 		Trips:      tripSvc,
 		Bookings:   service.NewBookings(appDB),
 		PushTokens: service.NewPushTokens(appDB),
+		Moderation: service.NewModeration(appDB),
 		Limiter:    &middleware.WindowLimiter{Max: cfg.APIRatePerMin, Window: time.Minute},
 		MediaDir:   cfg.MediaDir,
 	})

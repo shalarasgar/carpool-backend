@@ -54,6 +54,7 @@ docker compose up --build
 | `APP_NAME` | Service name. Default `carpool`. |
 | `PORT` | HTTP port. Default `8080`. |
 | `DEV_MODE` | Local development flag. Default `false`. |
+| `TRUST_PROXY` | Take the client IP from the last `X-Forwarded-For` entry. Default `false`. Enable only behind a reverse proxy that is the only route to the API (see [deploy/](deploy/README.md)). |
 | `DATABASE_URL` | PostgreSQL URL (`postgres://` or `postgresql://`). |
 | `JWT_SECRET` | Signing secret. Minimum 16 characters. Unused until auth is added. |
 | `OTP_HMAC_SECRET` | OTP HMAC secret. Minimum 16 characters. Unused until auth is added. |
@@ -124,6 +125,10 @@ The backend generates the OTP and the SMS text. The phone sends that text unchan
 | GET | `/admin/v1/gateways` | Admin bearer token. |
 | POST | `/admin/v1/gateways/{id}/revoke` | Admin bearer token. |
 | GET | `/admin/v1/sms/stats` | Admin bearer token. |
+| GET | `/admin/v1/reports` | Admin bearer token. Report queue. |
+| POST | `/admin/v1/reports/{id}/resolve` | Admin bearer token. |
+| POST | `/admin/v1/users/{id}/block`, `/unblock` | Admin bearer token. Ban or reinstate an account. |
+| POST | `/admin/v1/users/delete` | Admin bearer token. Body `{phone}`. Deletes an account on request. |
 
 Create a gateway, then paste the key into the Android app:
 
@@ -154,7 +159,8 @@ Summary; details in [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md). All 
 
 | Area | Endpoints |
 | --- | --- |
-| Profile | `GET/PATCH /v1/me`, `POST/DELETE /v1/me/photo`, `POST /v1/me/phone/request-otp`, `POST /v1/me/phone/verify`, `GET /v1/users/{id}`, `GET /v1/users/{id}/reviews` |
+| Profile | `GET/PATCH/DELETE /v1/me`, `POST/DELETE /v1/me/photo`, `POST /v1/me/phone/request-otp`, `POST /v1/me/phone/verify`, `GET /v1/users/{id}`, `GET /v1/users/{id}/reviews` |
+| Blocks and reports | `POST/DELETE /v1/users/{id}/block`, `GET /v1/me/blocks`, `POST /v1/reports` |
 | Vehicles | `GET/POST /v1/me/vehicles`, `PUT/DELETE /v1/me/vehicles/{id}`, `POST /v1/me/vehicles/{id}/photo` |
 | Locations | `GET /v1/locations` (public, ETag) |
 | Trips | `POST/GET /v1/trips`, `GET/PATCH /v1/trips/{id}`, `POST /v1/trips/{id}/cancel`, `POST /v1/trips/{id}/complete`, `GET /v1/me/trips` |
@@ -162,9 +168,29 @@ Summary; details in [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md). All 
 | Reviews | `POST /v1/bookings/{id}/review` |
 | Notifications | `GET /v1/me/notifications`, `GET /v1/me/notifications/unread-count`, `POST /v1/me/notifications/read` |
 
-New environment variables: `APP_TIMEZONE` (default `Asia/Ashgabat`), `TRIP_OVERLAP_BUFFER` (`30m`), `TRIP_COMPLETE_GRACE` (`6h`), `TRIP_REMIND_BEFORE` (`2h`), `MEDIA_DIR` (`./media`), `API_RATE_PER_MIN` (`120`).
+New environment variables: `APP_TIMEZONE` (default `Asia/Ashgabat`), `TRIP_OVERLAP_BUFFER` (`30m`), `TRIP_COMPLETE_GRACE` (`6h`), `TRIP_REMIND_BEFORE` (`2h`), `MEDIA_DIR` (`./media`), `API_RATE_PER_MIN` (`120`), `OTP_REVIEW_PHONE` and `OTP_REVIEW_CODE` (empty; see below).
 
 Integration tests need a disposable database: `make test-integration` (defaults to `carpool_test` on the compose Postgres).
+
+## Account deletion, moderation, and the store review login
+
+These exist because Google Play requires them of an app with accounts and user content.
+
+- **Account deletion.** `DELETE /v1/me` from the app, or `POST /admin/v1/users/delete {phone}` by an operator for a request that arrived through the website. Both erase the personal data at once; what is removed and what stays is listed in [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md#account-deletion).
+- **Blocks and reports.** Users block and report each other. Reports land in `GET /admin/v1/reports`; an operator resolves them and can ban an account.
+- **Review login.** `OTP_REVIEW_PHONE` and `OTP_REVIEW_CODE` make one number accept one fixed 6-digit code without an SMS, so a reviewer outside Turkmenistan can sign in. Give the pair to the store in the "App access" form. Use a number you own, keep nothing real in that account, and clear both variables when the review is over.
+
+```bash
+# Delete an account for a request received by email
+curl -s -X POST http://localhost:8080/admin/v1/users/delete \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"phone\":\"+99361234567\"}"
+
+# Open reports, then ban the reported account
+curl -s "http://localhost:8080/admin/v1/reports?status=open" -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s -X POST http://localhost:8080/admin/v1/users/<user-id>/block -H "Authorization: Bearer $ADMIN_TOKEN"
+```
 
 ## Assumptions
 
@@ -175,7 +201,12 @@ Integration tests need a disposable database: `make test-integration` (defaults 
 - Ashgabat is a city with no parent welayat. It is administered separately from Ahal, Balkan, Dashoguz, Lebap, and Mary.
 - The location seed contains those five welayats and these cities: Ashgabat, Anau (Änew), Tejen, Balkanabat, Turkmenbashi, Dashoguz, Turkmenabat, Mary, and Bayramaly. Welayats and those cities are `is_active = true`.
 - Etrap rows are left for `migrations/000003_seed_etraps.up.sql`, which is empty until an official list is added.
-- `reports.status` is text and defaults to `open`. The spec does not define a status enum.
+- `reports.status` is `open` or `resolved`; the spec does not define a status enum. `reports.reason` is a closed list so the client can translate it.
+- A deleted account keeps an empty `users` row, because other users' trips, bookings and reviews reference it. The spec does not cover deletion; erasing the personal data and keeping anonymous history is the simplest option that leaves other users' history intact.
+- Deleting an account is refused while a trip the user drives is under way. The driver completes the trip first; the alternative, completing it silently, would change a trip's outcome as a side effect.
+- A user-to-user block does not cancel bookings made before it. Either side can cancel or reject them.
+- An account banned by an admin keeps its phone number after deletion, so deleting and signing up again does not lift a ban.
+- The spec's admin list also names "activate/deactivate locations"; that is still done in the database.
 - Phone numbers stored in the database must match `+993` followed by 8 digits.
 - A user cannot block or review themselves. Those checks are database constraints.
 - Phase A error messages are English. Localized text arrives with the i18n work in a later phase. Codes (`INTERNAL`, `NOT_FOUND`, `METHOD_NOT_ALLOWED`) are stable.

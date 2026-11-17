@@ -20,6 +20,9 @@ type Config struct {
 	AppName string `envconfig:"APP_NAME" default:"carpool"`
 	Port    int    `envconfig:"PORT" default:"8080"`
 	DevMode bool   `envconfig:"DEV_MODE" default:"false"`
+	// TrustProxy takes client addresses from X-Forwarded-For. Safe only when
+	// the API port is reachable through the reverse proxy alone.
+	TrustProxy bool `envconfig:"TRUST_PROXY" default:"false"`
 
 	DatabaseURL   string `envconfig:"DATABASE_URL" required:"true"`
 	JWTSecret     string `envconfig:"JWT_SECRET" required:"true"`
@@ -48,6 +51,8 @@ type Config struct {
 	OTPDeviceHourlyMax int           `envconfig:"OTP_DEVICE_HOURLY_MAX" default:"10"`
 	OTPMobilePrefixes  string        `envconfig:"OTP_MOBILE_PREFIXES" default:"6,7"`
 	OTPTestPhones      string        `envconfig:"OTP_TEST_PHONES"`
+	OTPReviewPhone     string        `envconfig:"OTP_REVIEW_PHONE"`
+	OTPReviewCode      string        `envconfig:"OTP_REVIEW_CODE"`
 	SMSMaxAttempts     int           `envconfig:"SMS_MAX_ATTEMPTS" default:"3"`
 	SMSLease           time.Duration `envconfig:"SMS_LEASE" default:"60s"`
 	SMSSendingLease    time.Duration `envconfig:"SMS_SENDING_LEASE" default:"3m"`
@@ -96,6 +101,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("app_name", c.AppName),
 		slog.Int("port", c.Port),
 		slog.Bool("dev_mode", c.DevMode),
+		slog.Bool("trust_proxy", c.TrustProxy),
 		slog.Bool("migrate_on_start", c.MigrateOnStart),
 		slog.Int("db_max_conns", int(c.DBMaxConns)),
 		slog.Int("db_min_conns", int(c.DBMinConns)),
@@ -103,6 +109,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("db_max_conn_idle_time", c.DBMaxConnIdleTime),
 		slog.Duration("db_health_check_period", c.DBHealthCheckPeriod),
 		slog.Int("otp_test_phones", len(c.TestPhones())),
+		slog.Bool("otp_review_login", c.OTPReviewPhone != ""),
 		slog.Bool("push_enabled", c.PushEnabled()),
 	)
 }
@@ -174,6 +181,9 @@ func (c Config) validate() error {
 	if _, err := c.parseTestPhones(); err != nil {
 		return err
 	}
+	if _, _, err := c.parseReviewLogin(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -202,6 +212,31 @@ func (c Config) parseTestPhones() (map[string]bool, error) {
 		out[phone] = true
 	}
 	return out, nil
+}
+
+// ReviewLogin returns the phone number that always receives the fixed code, and that
+// code. Both are empty when the app-store review login is off.
+func (c Config) ReviewLogin() (phone, code string) {
+	phone, code, _ = c.parseReviewLogin()
+	return phone, code
+}
+
+func (c Config) parseReviewLogin() (phone, code string, err error) {
+	rawPhone, code := strings.TrimSpace(c.OTPReviewPhone), strings.TrimSpace(c.OTPReviewCode)
+	if rawPhone == "" && code == "" {
+		return "", "", nil
+	}
+	if rawPhone == "" || code == "" {
+		return "", "", fmt.Errorf("OTP_REVIEW_PHONE and OTP_REVIEW_CODE must be set together")
+	}
+	phone, err = auth.NormalizePhone(rawPhone, c.MobilePrefixes())
+	if err != nil {
+		return "", "", fmt.Errorf("OTP_REVIEW_PHONE is not a valid number")
+	}
+	if len(code) != 6 || strings.Trim(code, "0123456789") != "" {
+		return "", "", fmt.Errorf("OTP_REVIEW_CODE must be exactly 6 digits")
+	}
+	return phone, code, nil
 }
 
 func splitPrefixes(raw string) ([]string, error) {

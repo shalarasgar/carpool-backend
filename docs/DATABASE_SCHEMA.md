@@ -11,12 +11,25 @@ PostgreSQL 16. UUID keys, `timestamptz` everywhere, times stored in UTC. Migrati
 | 000004 | SMS send tracking. |
 | 000005 | Enum values: trip `in_progress`, `expired`; booking `completed`, `expired`; location `settlement`. Separate because a new enum value cannot be used in the transaction that adds it. |
 | 000006 | Product schema (below). Reversible; down tested. |
+| 000007 | `push_tokens` and `notifications.pushed_at` (push outbox). |
+| 000008 | Account deletion (`users.deleted_at`, nullable `users.phone`) and report handling (`reports.resolved_at`, CHECKed `status`, `reason`, `details` length). The down migration fails while deleted accounts exist: the old schema cannot hold a user without a phone. |
 
-## Entities after 000006
+## Entities
 
 **users** — one account for driving and travelling. Added `first_name`, `last_name` (required by
 the service before trips/bookings), `bio`. The legacy `name` column is kept in sync.
 `rating_avg`/`rating_count` are recomputed from `reviews` in the review transaction.
+`is_blocked` is an admin ban. `deleted_at` marks a deleted account: the row stays because other
+users' trips, bookings and reviews reference it, but name, bio, photo and rating are empty and
+`phone` is NULL (released for a new registration). A deleted row keeps its `phone` only while
+`is_blocked` is true, so deletion does not lift a ban. Code that reads `phone` must expect NULL.
+
+**user_blocks** — `(blocker_id, blocked_id)`. Checked in both directions by search and booking.
+
+**reports** — `reporter_id`, `reported_user_id`, optional `trip_id`, `reason` (CHECKed list:
+spam, fraud, abuse, no_show, unsafe, fake_profile, inappropriate_content, other), `details`
+(≤ 1000), `status` (`open` | `resolved`), `resolved_at`. Reports about a deleted account are
+removed with it unless it is banned; reports a deleted user filed stay.
 
 **vehicles** — `user_id` owner (many per user), `brand, model, color, plate`, optional
 `year, vehicle_type, passenger_seats (1–8, without the driver), photo_url`, `deleted_at` (soft delete).
@@ -56,3 +69,6 @@ Partial unique index: one pending/approved booking per passenger per trip.
 - Booking: `pending` → `approved | rejected | cancelled_by_* | expired`; `approved` → `cancelled_by_* | completed`.
 
 History is never deleted: cancelled, rejected, expired and completed rows stay for history and reviews.
+Account deletion is the exception for personal data: it removes or clears what identifies the
+user (see `DeleteAccount` in `internal/store/account_db.go`) and leaves the anonymous trip and
+booking rows for the other participants.

@@ -55,6 +55,9 @@ var (
 	ErrContactUnavailable = errors.New("contact unavailable")
 	// ErrUserBlocked means one of the two users blocked the other.
 	ErrUserBlocked = errors.New("user blocked")
+	// ErrTripInProgress means the account cannot be deleted while a trip the user drives
+	// has departed and is not completed yet.
+	ErrTripInProgress = errors.New("trip in progress")
 )
 
 // FieldError names the field that failed validation. errors.Is(err, ErrValidation) is true.

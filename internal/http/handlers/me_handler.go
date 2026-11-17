@@ -79,6 +79,16 @@ func (h Me) DeletePhoto(w http.ResponseWriter, r *http.Request) {
 	httperr.WriteJSON(w, http.StatusOK, toProfile(p, true))
 }
 
+// Delete serves DELETE /v1/me: the caller's account and personal data are erased. It
+// answers 409 TRIP_IN_PROGRESS while a trip the caller drives is under way.
+func (h Me) Delete(w http.ResponseWriter, r *http.Request) {
+	if err := h.Profiles.DeleteAccount(r.Context(), middleware.UserFrom(r.Context())); err != nil {
+		writeRideErr(w, r, h.Logger, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type phoneChangeRequest struct {
 	Phone    string `json:"phone"`
 	Code     string `json:"code"`

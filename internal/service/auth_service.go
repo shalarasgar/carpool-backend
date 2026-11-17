@@ -34,6 +34,10 @@ type AuthConfig struct {
 	ReturnDevCode   bool
 	// TestPhones are normalized numbers that skip every OTP rate limit.
 	TestPhones map[string]bool
+	// ReviewPhone and ReviewCode are the app-store review login: this one number always
+	// gets ReviewCode and no SMS, so a reviewer abroad can sign in. Both empty turns it off.
+	ReviewPhone string
+	ReviewCode  string
 }
 
 // Session is the result of a successful OTP check or refresh.
@@ -73,9 +77,12 @@ func (a *Auth) RequestOTP(ctx context.Context, phoneRaw, ip, deviceID, locale st
 	if deviceID != "" && !auth.ValidDeviceID(deviceID) {
 		return "", auth.ErrValidation
 	}
-	code, err := auth.RandomCode()
-	if err != nil {
-		return "", err
+	review := a.cfg.ReviewPhone != "" && phone == a.cfg.ReviewPhone
+	code := a.cfg.ReviewCode
+	if !review {
+		if code, err = auth.RandomCode(); err != nil {
+			return "", err
+		}
 	}
 	now := a.now()
 	result, err := a.store.CreateChallenge(ctx, auth.Challenge{
@@ -91,6 +98,8 @@ func (a *Auth) RequestOTP(ctx context.Context, phoneRaw, ip, deviceID, locale st
 		IPHourlyMax:     a.cfg.IPHourlyMax,
 		DeviceHourlyMax: a.cfg.DeviceHourlyMax,
 		SkipLimits:      a.cfg.TestPhones[phone],
+		SkipPhoneLimits: review,
+		NoSMS:           review,
 	})
 	if err != nil {
 		return "", err

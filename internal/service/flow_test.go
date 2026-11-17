@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"testing"
@@ -131,6 +132,52 @@ func TestWrongCodeLocksAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+// The app-store review login: one configured number always gets the same code, receives no
+// SMS, and is not held back by the per-phone quota. Every other number is unaffected.
+func TestReviewLoginUsesTheFixedCodeWithoutAnSMS(t *testing.T) {
+	t.Parallel()
+	const reviewPhone, reviewCode = "+99362000001", "482915"
+	db := newMemDB()
+	cfg := testAuthConfig()
+	cfg.ReviewPhone, cfg.ReviewCode = reviewPhone, reviewCode
+	authSvc := NewAuth(db, cfg, discardLogger())
+
+	for i := 0; i < cfg.PhoneDailyMax+2; i++ {
+		code, err := authSvc.RequestOTP(context.Background(), reviewPhone, "10.0.0.1", "device-1", "en")
+		if err != nil {
+			t.Fatalf("request %d for the review number: %v", i, err)
+		}
+		if code != "" {
+			t.Fatal("the fixed code was returned without dev mode")
+		}
+	}
+	if len(db.jobs) != 0 {
+		t.Fatalf("an SMS was queued for the review number: %d jobs", len(db.jobs))
+	}
+	if _, err := authSvc.VerifyOTP(context.Background(), reviewPhone, "000000", "device-1", "en"); !errors.Is(err, auth.ErrInvalidCode) {
+		t.Fatalf("wrong code err = %v", err)
+	}
+	session, err := authSvc.VerifyOTP(context.Background(), reviewPhone, reviewCode, "device-1", "en")
+	if err != nil || session.AccessToken == "" || session.User.Phone != reviewPhone {
+		t.Fatalf("review login = %+v err=%v", session.User, err)
+	}
+
+	// Another number still gets a random code by SMS and is rate limited.
+	if _, err := authSvc.RequestOTP(context.Background(), phoneNumber, "10.0.0.1", "device-1", "tk"); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.jobs) != 1 {
+		t.Fatalf("jobs after an ordinary request = %d", len(db.jobs))
+	}
+	if _, err := authSvc.VerifyOTP(context.Background(), phoneNumber, reviewCode, "device-1", "tk"); !errors.Is(err, auth.ErrInvalidCode) {
+		t.Fatalf("the review code opened another number: err = %v", err)
+	}
+	var limited *smsqueue.RateLimited
+	if _, err := authSvc.RequestOTP(context.Background(), phoneNumber, "10.0.0.1", "device-1", "tk"); !errors.As(err, &limited) {
+		t.Fatalf("second ordinary request err = %v", err)
+	}
+}
+
 func TestTestPhonesSkipRateLimits(t *testing.T) {
 	t.Parallel()
 	db := newMemDB()
@@ -254,7 +301,7 @@ func newMemDB() *memDB {
 func (m *memDB) CreateChallenge(_ context.Context, in auth.Challenge) (auth.ChallengeResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !in.SkipLimits {
+	if !in.SkipLimits && !in.SkipPhoneLimits {
 		for i := len(m.otps) - 1; i >= 0; i-- {
 			if m.otps[i].phone == in.Phone {
 				if in.Now.Sub(m.otps[i].created) < in.PhoneInterval {
@@ -279,6 +326,9 @@ func (m *memDB) CreateChallenge(_ context.Context, in auth.Challenge) (auth.Chal
 		}
 	}
 	m.otps = append(m.otps, memOTP{phone: in.Phone, hash: in.CodeHash, ip: in.IP, device: in.DeviceID, expires: in.ExpiresAt, created: in.Now})
+	if in.NoSMS {
+		return auth.ChallengeResult{}, nil
+	}
 	list := make([]smsqueue.Gateway, 0, len(m.gateways))
 	for _, g := range m.gateways {
 		list = append(list, g)

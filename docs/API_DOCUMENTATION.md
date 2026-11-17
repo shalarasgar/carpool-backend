@@ -44,11 +44,53 @@ unless stated. Every response carries `X-Request-ID`.
 | DELETE | `/v1/me/photo` | Removes the photo. |
 | POST | `/v1/me/phone/request-otp` | `{phone, device_id}`. Sends an OTP to the **new** number through the SMS queue. `409 PHONE_TAKEN` if used. |
 | POST | `/v1/me/phone/verify` | `{phone, code}`. Moves the account to the new number. |
-| GET | `/v1/users/{id}` | Public profile. Never contains `phone` or `locale`. |
+| GET | `/v1/users/{id}` | Public profile. Never contains `phone` or `locale`. `404` for a deleted account. |
 | GET | `/v1/users/{id}/reviews` | Reviews received: `author, author_role (driver|passenger), rating, comment, created_at`. |
+| DELETE | `/v1/me` | Deletes the caller's account and personal data → `204`. `409 TRIP_IN_PROGRESS` while a trip the caller drives has departed and is not completed. |
 
 `profile_complete` is false until first and last name are set. Publishing and booking return
 `422 PROFILE_INCOMPLETE` until then.
+
+### Account deletion
+
+`DELETE /v1/me` is immediate and cannot be undone. In one transaction it:
+
+- cancels the trips the user drives that have not departed (passengers get `trip_cancelled`) and
+  the user's pending bookings and approved bookings on trips that have not departed (drivers get
+  `booking_cancelled_by_passenger`);
+- deletes vehicles, photos, sessions, push tokens, the inbox, blocks, OTP rows and the reviews
+  **about** the user;
+- clears the texts the user wrote (trip description and conditions, meeting points, booking
+  messages, review comments) and keeps the ratings the user gave to others;
+- clears name, bio, photo and rating and releases the phone number, which can register again
+  as a new account.
+
+Every access token of the account then gets `401 UNAUTHORIZED`. Past trips and bookings stay in
+the history of the other participants; the embedded user object there has `"deleted": true` and
+empty names, and clients show a placeholder such as "Deleted user". A deleted user cannot be
+reviewed (`422 REVIEW_NOT_ALLOWED`).
+
+A driver whose trip is under way must complete it first (`POST /v1/trips/{id}/complete`), then
+delete. A passenger on a trip that has departed can delete; that booking completes with the trip.
+
+An account that an admin blocked keeps its phone number after deletion, so the ban holds.
+
+## Blocks and reports
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/v1/users/{id}/block` | Blocks a user → `204`. Idempotent. `404` unknown or deleted user, `422` when `id` is the caller. |
+| DELETE | `/v1/users/{id}/block` | Removes the block → `204`. Idempotent. |
+| GET | `/v1/me/blocks` | `{items: [user…]}`, the users the caller blocked, newest first (at most 200). |
+| POST | `/v1/reports` | `{reported_user_id, trip_id?, reason, details?}` → `201 {id}`. |
+
+A block works in both directions: neither user sees the other's trips in search, and a booking
+between them is refused with `403 USER_UNAVAILABLE`. Bookings made before the block are not
+changed; either side can cancel or reject them as usual.
+
+`reason` is one of `spam, fraud, abuse, no_show, unsafe, fake_profile, inappropriate_content,
+other`. `details` is free text up to 1000 characters and is required for `other`. A user cannot
+report themselves. Reports go to the admin queue; the reported user is not notified.
 
 ## Vehicles
 
@@ -92,7 +134,7 @@ Errors: `422 VALIDATION_ERROR` (with `field`), `422 LOCATION_INACTIVE`, `409 TRI
 
 ### Trip object
 
-`id, status, driver{id, first_name, last_name, photo_url, rating_avg, rating_count, completed_trips},
+`id, status, driver{id, first_name, last_name, photo_url, rating_avg, rating_count, completed_trips, deleted?},
 vehicle{brand, model, color, plate?, year, vehicle_type, passenger_seats, photo_url},
 stops[{order, location, meeting_point, planned_at, stop_type}], departs_at, arrives_at, seats_total,
 free_seats_by_segment[], price, price_negotiable, currency, description, conditions, amenities,
@@ -102,6 +144,8 @@ booking_id, booking_status}, pending_requests?, approved_seats?`
 - `free_seats_by_segment[i]` is free seats between stop `i` and stop `i+1`.
 - `vehicle.plate` is present only for the driver and for a passenger whose booking is approved or completed.
 - `pending_requests` and `approved_seats` are present only for the driver.
+- Every embedded user (`driver`, `passenger`, `author`, `actor`) has `deleted: true` when the
+  account was deleted; its names and photo are then empty.
 
 ### Other trip endpoints
 
@@ -165,3 +209,24 @@ codes are stored.
 ## Media
 
 `GET /media/{file}` serves uploaded photos (public, cacheable).
+
+## Admin: moderation
+
+All need `Authorization: Bearer <ADMIN_TOKEN>`. Error messages follow `Accept-Language` like the
+product API.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/admin/v1/reports?status=open|resolved&page=&limit=` | Report queue, oldest first. Without `status`, every report. Items: `id, reporter_id, reporter_name, reported_user_id, reported_name, reported_blocked, reported_deleted, trip_id?, reason, details?, status, created_at, resolved_at?`. No phone numbers. |
+| POST | `/admin/v1/reports/{id}/resolve` | Closes a report → `204`. Idempotent. |
+| POST | `/admin/v1/users/{id}/block` | Bans an account → `204`. The user cannot sign in, every request gets `403 USER_BLOCKED`, sessions and push tokens are removed. |
+| POST | `/admin/v1/users/{id}/unblock` | Lifts the ban → `204`. |
+| POST | `/admin/v1/users/delete` | `{phone}` → `204`. Deletes the account that owns the number, exactly like `DELETE /v1/me`. For deletion requests received outside the app (the website); check first that the requester owns the number. `404` when no account has it, `409 TRIP_IN_PROGRESS` as above. |
+
+## App-store review login
+
+Store reviewers cannot receive an SMS on a Turkmenistan number. When `OTP_REVIEW_PHONE` and
+`OTP_REVIEW_CODE` are set, that one number always accepts that 6-digit code: `request-otp`
+answers `202` as usual but queues no SMS, and `verify-otp` with the fixed code signs in. The
+per-IP and per-device OTP limits still apply to it; the per-phone limits do not. Leave both
+variables empty when no review is in progress.

@@ -63,7 +63,7 @@ func (db *AppDB) Notifications(ctx context.Context, userID string, before *time.
 		       t.departs_at,
 		       fl.id::text, fl.name_tk, fl.name_ru, fl.name_en,
 		       tl.id::text, tl.name_tk, tl.name_ru, tl.name_en,
-		       a.id::text, a.first_name, a.last_name, a.photo_url
+		       a.id::text, a.first_name, a.last_name, a.photo_url, a.deleted_at IS NOT NULL
 		FROM notifications n
 		LEFT JOIN trips t ON t.id = n.trip_id
 		LEFT JOIN locations fl ON fl.id = t.from_location_id
@@ -82,8 +82,9 @@ func (db *AppDB) Notifications(ctx context.Context, userID string, before *time.
 		var n ride.Notification
 		var typ string
 		var flID, flTK, flRU, flEN, tlID, tlTK, tlRU, tlEN, aID, aFirst, aLast, aPhoto *string
+		var aDeleted *bool
 		if err := rows.Scan(&n.ID, &typ, &n.TripID, &n.BookingID, &n.ReadAt, &n.CreatedAt, &n.DepartsAt,
-			&flID, &flTK, &flRU, &flEN, &tlID, &tlTK, &tlRU, &tlEN, &aID, &aFirst, &aLast, &aPhoto); err != nil {
+			&flID, &flTK, &flRU, &flEN, &tlID, &tlTK, &tlRU, &tlEN, &aID, &aFirst, &aLast, &aPhoto, &aDeleted); err != nil {
 			return nil, false, dbErr("scan notification", err)
 		}
 		n.Type = ride.NotificationType(typ)
@@ -94,7 +95,8 @@ func (db *AppDB) Notifications(ctx context.Context, userID string, before *time.
 			n.To = &ride.Location{ID: *tlID, NameTK: deref(tlTK), NameRU: deref(tlRU), NameEN: deref(tlEN)}
 		}
 		if aID != nil {
-			n.Actor = &ride.UserSummary{ID: *aID, FirstName: deref(aFirst), LastName: deref(aLast), PhotoURL: deref(aPhoto)}
+			n.Actor = &ride.UserSummary{ID: *aID, FirstName: deref(aFirst), LastName: deref(aLast), PhotoURL: deref(aPhoto),
+				Deleted: aDeleted != nil && *aDeleted}
 		}
 		out = append(out, n)
 	}

@@ -61,7 +61,20 @@ func (e e2e) login(phone, device string) string {
 	return session["access_token"].(string)
 }
 
-func TestProductFlowEndToEnd(t *testing.T) {
+const (
+	e2eAdminToken = "e2e-admin-token-0123456789"
+	// The fixed code of the review login in these tests.
+	e2eReviewCode = "482915"
+)
+
+func e2ePhone(prefix string) string {
+	return fmt.Sprintf("+993%s%07d", prefix, rand.IntN(10000000))
+}
+
+// startE2E serves the real router over the test database. phones skip the OTP limits;
+// reviewPhone, when set, is the app-store review login.
+func startE2E(t *testing.T, reviewPhone string, phones ...string) e2e {
+	t.Helper()
 	url := os.Getenv("CARPOOL_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("CARPOOL_TEST_DATABASE_URL is not set")
@@ -73,26 +86,44 @@ func TestProductFlowEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	db := store.NewAppDB(pool)
-	driverPhone := fmt.Sprintf("+9936%07d", rand.IntN(10000000))
-	passengerPhone := fmt.Sprintf("+9937%07d", rand.IntN(10000000))
-	authSvc := service.NewAuth(db, service.AuthConfig{
+	testPhones := map[string]bool{}
+	for _, p := range phones {
+		testPhones[p] = true
+	}
+	authCfg := service.AuthConfig{
 		AppName: "carpool", OTPSecret: "e2e-otp-secret-0123456789", JWTSecret: "e2e-jwt-secret-0123456789",
 		Prefixes: []string{"6", "7"}, OTPTTL: 5 * time.Minute, MaxAttempts: 5, PhoneInterval: time.Minute,
 		PhoneDailyMax: 5, IPHourlyMax: 100, DeviceHourlyMax: 100, AccessTTL: 15 * time.Minute,
-		RefreshTTL: time.Hour, ReturnDevCode: true,
-		TestPhones: map[string]bool{driverPhone: true, passengerPhone: true},
-	}, nil)
+		RefreshTTL: time.Hour, ReturnDevCode: true, TestPhones: testPhones,
+	}
+	if reviewPhone != "" {
+		authCfg.ReviewPhone, authCfg.ReviewCode = reviewPhone, e2eReviewCode
+	}
+	authSvc := service.NewAuth(db, authCfg, nil)
 	trips := service.NewTrips(db, service.TripConfig{OverlapBuffer: 30 * time.Minute}, nil)
 	router := NewRouter(Deps{
 		Auth: authSvc, DevMode: true, JWTSecret: "e2e-jwt-secret-0123456789", Users: db,
-		Profiles: service.NewProfiles(db, media.Disk{Dir: t.TempDir()}, authSvc, nil),
-		Trips:    trips, Bookings: service.NewBookings(db),
+		AdminToken: e2eAdminToken,
+		Profiles:   service.NewProfiles(db, media.Disk{Dir: t.TempDir()}, authSvc, nil),
+		Trips:      trips, Bookings: service.NewBookings(db), Moderation: service.NewModeration(db),
 		Limiter: &middleware.WindowLimiter{Max: 1000, Window: time.Minute}, MediaDir: t.TempDir(),
 	})
-	e := e2e{t: t, srv: httptest.NewServer(router)}
-	defer e.srv.Close()
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+	return e2e{t: t, srv: srv}
+}
+
+func errCode(body map[string]any) string {
+	e, _ := body["error"].(map[string]any)
+	code, _ := e["code"].(string)
+	return code
+}
+
+func TestProductFlowEndToEnd(t *testing.T) {
+	driverPhone, passengerPhone := e2ePhone("6"), e2ePhone("7")
+	e := startE2E(t, "", driverPhone, passengerPhone)
 
 	e.call("GET", "/v1/me", "", nil, http.StatusUnauthorized)
 	locs := e.call("GET", "/v1/locations", "", nil, http.StatusOK)

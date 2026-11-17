@@ -1,0 +1,77 @@
+# Production stack: Caddy (HTTPS) -> API -> PostgreSQL. Run from this directory:
+#   docker compose up -d --build
+# Only Caddy publishes ports. The API and the database are reachable on the
+# compose network alone, which is what makes TRUST_PROXY=true safe.
+name: yolugra
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: carpool
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: carpool
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carpool -d carpool"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  api:
+    build:
+      context: ..
+    restart: unless-stopped
+    env_file: .env
+    # These win over .env, so a copied development value cannot switch them.
+    environment:
+      PORT: "8080"
+      DEV_MODE: "false"
+      TRUST_PROXY: "true"
+      MIGRATE_ON_START: "true"
+      MEDIA_DIR: /media
+      DATABASE_URL: postgres://carpool:${POSTGRES_PASSWORD}@postgres:5432/carpool?sslmode=disable
+    volumes:
+      - media:/media
+      # Firebase service account key; set FCM_CREDENTIALS_FILE=/secrets/<file>.json in .env.
+      - ../secrets:/secrets:ro
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in deploy/.env}
+      SITE_DOMAIN: ${SITE_DOMAIN:?set SITE_DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./site:/srv/site:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    logging: *logging
+
+volumes:
+  pgdata:
+  media:
+  caddy_data:
+  caddy_config:

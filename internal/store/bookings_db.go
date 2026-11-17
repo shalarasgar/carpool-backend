@@ -29,7 +29,7 @@ func (db *AppDB) CreateBooking(ctx context.Context, in ride.BookingInput, now ti
 		}
 		var first, last string
 		if err := tx.QueryRow(ctx, `
-			SELECT first_name, last_name FROM users WHERE id = $1::uuid AND NOT is_blocked
+			SELECT first_name, last_name FROM users WHERE id = $1::uuid AND NOT is_blocked AND deleted_at IS NULL
 		`, in.PassengerID).Scan(&first, &last); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ride.ErrNotFound
@@ -184,56 +184,62 @@ func (db *AppDB) CancelBooking(ctx context.Context, actorID, bookingID string, n
 		if err != nil {
 			return err
 		}
-		var target ride.BookingStatus
-		var notify string
-		switch actorID {
-		case b.PassengerID:
-			target, notify = ride.BookingCancelledByPassenger, t.DriverID
-		case t.DriverID:
-			target, notify = ride.BookingCancelledByDriver, b.PassengerID
-		default:
-			return ride.ErrNotFound
-		}
-		if b.Status.Cancelled() {
-			return nil
-		}
-		if !ride.CanTransitionBooking(b.Status, target) {
-			return ride.ErrInvalidTransition
-		}
-		if b.Status == ride.BookingApproved && !t.DepartsAt.After(now) {
-			return ride.ErrTripStarted
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE bookings SET status = $2::booking_status, cancelled_at = $3 WHERE id = $1::uuid
-		`, b.ID, target, now); err != nil {
-			return dbErr("cancel booking", err)
-		}
-		if b.Status == ride.BookingApproved {
-			remaining := make([]ride.Occupant, 0, len(t.Occupants))
-			skipped := false
-			for _, o := range t.Occupants {
-				if !skipped && o.From == b.PickupOrder && o.To == b.DropoffOrder && o.Seats == b.Seats {
-					skipped = true
-					continue
-				}
-				remaining = append(remaining, o)
-			}
-			if err := refreshTripStatus(ctx, tx, t, remaining); err != nil {
-				return err
-			}
-		}
-		return insertEvents(ctx, tx, []ride.Event{{
-			UserID: notify, Type: ride.NotificationType("booking_" + string(target)), TripID: t.ID, BookingID: b.ID,
-			ActorID: actorID, DedupeKey: string(target) + ":" + b.ID,
-		}})
+		return cancelLockedBooking(ctx, tx, t, b, actorID, now)
 	})
+}
+
+// cancelLockedBooking cancels b for actorID, who must be its passenger or the driver of t.
+// The caller holds the trip and booking locks.
+func cancelLockedBooking(ctx context.Context, tx pgx.Tx, t lockedTrip, b lockedBooking, actorID string, now time.Time) error {
+	var target ride.BookingStatus
+	var notify string
+	switch actorID {
+	case b.PassengerID:
+		target, notify = ride.BookingCancelledByPassenger, t.DriverID
+	case t.DriverID:
+		target, notify = ride.BookingCancelledByDriver, b.PassengerID
+	default:
+		return ride.ErrNotFound
+	}
+	if b.Status.Cancelled() {
+		return nil
+	}
+	if !ride.CanTransitionBooking(b.Status, target) {
+		return ride.ErrInvalidTransition
+	}
+	if b.Status == ride.BookingApproved && !t.DepartsAt.After(now) {
+		return ride.ErrTripStarted
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE bookings SET status = $2::booking_status, cancelled_at = $3 WHERE id = $1::uuid
+	`, b.ID, target, now); err != nil {
+		return dbErr("cancel booking", err)
+	}
+	if b.Status == ride.BookingApproved {
+		remaining := make([]ride.Occupant, 0, len(t.Occupants))
+		skipped := false
+		for _, o := range t.Occupants {
+			if !skipped && o.From == b.PickupOrder && o.To == b.DropoffOrder && o.Seats == b.Seats {
+				skipped = true
+				continue
+			}
+			remaining = append(remaining, o)
+		}
+		if err := refreshTripStatus(ctx, tx, t, remaining); err != nil {
+			return err
+		}
+	}
+	return insertEvents(ctx, tx, []ride.Event{{
+		UserID: notify, Type: ride.NotificationType("booking_" + string(target)), TripID: t.ID, BookingID: b.ID,
+		ActorID: actorID, DedupeKey: string(target) + ":" + b.ID,
+	}})
 }
 
 const bookingSelect = `
 SELECT b.id::text, b.trip_id::text, b.status::text, b.seats, b.pickup_order, b.dropoff_order, b.luggage,
        COALESCE(b.message, ''), b.created_at, b.decided_at, b.cancelled_at, b.completed_at,
        ` + summarySelect + `,
-       t.driver_id::text, u.phone, du.phone,
+       t.driver_id::text, COALESCE(u.phone, ''), COALESCE(du.phone, ''),
        EXISTS (SELECT 1 FROM reviews r WHERE r.booking_id = b.id AND r.from_user_id = $1::uuid)
 FROM bookings b
 JOIN users u ON u.id = b.passenger_id

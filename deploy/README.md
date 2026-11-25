@@ -18,6 +18,7 @@ At the domain registrar, point these records at the VPS IP:
 | A | `api` | VPS IP |
 | A | `@` | VPS IP |
 | A | `www` | VPS IP |
+| A | `admin` | VPS IP |
 
 Wait until `nslookup api.yolugra.tech` returns the VPS IP. Caddy cannot get a certificate before that.
 
@@ -66,6 +67,16 @@ Website: build it on Windows (`cd ../website && go run . -strict`) and copy `pub
 ```bash
 scp -r public/* root@<VPS-IP>:/opt/yolugra/deploy/site/
 ```
+
+Admin panel: build it on Windows and copy `build/web/` the same way. Caddy serves it on `ADMIN_DOMAIN` and forwards `/admin/v1/*` and `/media/*` to the API.
+
+```bash
+cd ../admin_yolugra && flutter build web --release
+ssh root@<VPS-IP> mkdir -p /opt/yolugra/deploy/admin
+scp -r build/web/* root@<VPS-IP>:/opt/yolugra/deploy/admin/
+```
+
+After the first start open `https://admin.yolugra.tech`, choose «Аварийный вход по токену», paste `ADMIN_TOKEN`, add personal accounts in «Команда», then sign in with your login.
 
 ## 4. Start
 

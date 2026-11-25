@@ -22,3 +22,21 @@
 www.{$SITE_DOMAIN} {
 	redir https://{$SITE_DOMAIN}{uri} permanent
 }
+
+# Admin panel (Flutter web). Copy ../../admin_yolugra/build/web into ./admin.
+# It calls its own origin, so the admin API and profile photos are proxied here
+# and the API needs no CORS.
+{$ADMIN_DOMAIN} {
+	encode zstd gzip
+	header X-Robots-Tag "noindex, nofollow"
+	@api path /admin/v1/* /media/*
+	handle @api {
+		reverse_proxy api:8080
+	}
+	handle {
+		root * /srv/admin
+		# Section addresses (/users, /reports/...) are app routes: serve index.html.
+		try_files {path} /index.html
+		file_server
+	}
+}

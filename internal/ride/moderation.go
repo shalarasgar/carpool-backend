@@ -96,4 +96,8 @@ type Report struct {
 	Status          ReportStatus
 	CreatedAt       time.Time
 	ResolvedAt      *time.Time
+	// History of the reported user, so the queue shows repeat offenders at a glance.
+	ReportedReports     int
+	ReportedOpenReports int
+	ReportedReporters   int
 }

@@ -58,7 +58,7 @@ docker compose up --build
 | `DATABASE_URL` | PostgreSQL URL (`postgres://` or `postgresql://`). |
 | `JWT_SECRET` | Signing secret. Minimum 16 characters. Unused until auth is added. |
 | `OTP_HMAC_SECRET` | OTP HMAC secret. Minimum 16 characters. Unused until auth is added. |
-| `ADMIN_TOKEN` | Static admin token for `/admin/v1`. Minimum 16 characters. |
+| `ADMIN_TOKEN` | Static admin token for `/admin/v1`. Minimum 16 characters. Operators sign in to the panel with personal accounts; this token creates the first ones (`POST /admin/v1/staff`) and serves scripts and emergencies. See docs/API_DOCUMENTATION.md, Admin: staff accounts and roles. |
 | `MIGRATE_ON_START` | Apply embedded migrations before serving. Default `false`. |
 | `DB_MAX_CONNS` | Pool max connections. Default `10`. |
 | `DB_MIN_CONNS` | Pool min connections. Default `2`. |

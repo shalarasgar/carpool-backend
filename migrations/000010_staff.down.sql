@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS staff_audit;
+DROP TABLE IF EXISTS staff_sessions;
+DROP TABLE IF EXISTS staff;

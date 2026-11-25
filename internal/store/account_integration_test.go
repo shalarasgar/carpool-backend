@@ -370,7 +370,7 @@ func TestReportsAreQueuedAndResolved(t *testing.T) {
 	find := func(status ride.ReportStatus) *ride.Report {
 		t.Helper()
 		for page := 1; ; page++ {
-			list, more, err := db.Reports(ctx, status, page, 50)
+			list, more, err := db.Reports(ctx, ride.ReportFilter{Status: status}, page, 50)
 			if err != nil {
 				t.Fatal(err)
 			}

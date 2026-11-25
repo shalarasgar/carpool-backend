@@ -4,6 +4,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shalarasgar/carpool-backend/internal/http/errors"
@@ -34,8 +35,19 @@ type Deps struct {
 	PushTokens *service.PushTokens
 	// Moderation mounts blocks and reports, and their admin routes. Nil leaves them out.
 	Moderation *service.Moderation
-	Limiter    middleware.Limiter
-	MediaDir   string
+	// Admin mounts the admin panel's dashboard and account pages. Nil leaves them out.
+	Admin *service.Admin
+	// Analytics mounts the admin activity report. Nil leaves it out.
+	Analytics *service.Analytics
+	// Staff mounts panel sign-in, staff accounts and the audit log, and admits staff
+	// sessions next to AdminToken. Nil leaves only AdminToken.
+	Staff *service.Staff
+	// StaffLoginLimiter caps sign-in attempts per client address. Nil uses 10 per 15 min.
+	StaffLoginLimiter middleware.Limiter
+	// Activity counts the users of authenticated requests (counts only). Nil counts nothing.
+	Activity middleware.ActivityRecorder
+	Limiter  middleware.Limiter
+	MediaDir string
 }
 
 // NewRouter returns the application router.
@@ -81,10 +93,24 @@ func NewRouter(deps Deps) http.Handler {
 			r.Post("/heartbeat", gw.Heartbeat)
 		})
 	}
-	if deps.Gateway != nil || deps.Moderation != nil {
+	if deps.Gateway != nil || deps.Moderation != nil || deps.Admin != nil || deps.Analytics != nil || deps.Staff != nil {
 		r.Route("/admin/v1", func(r chi.Router) {
-			r.Use(middleware.AdminAuth(deps.AdminToken))
-			mountAdmin(r, deps, logger)
+			// Interfaces stay nil (not typed nil) when there is no staff service.
+			var sessions middleware.StaffAuthenticator
+			var rec handlers.AuditRecorder
+			if deps.Staff != nil {
+				sessions, rec = deps.Staff, deps.Staff
+				limiter := deps.StaffLoginLimiter
+				if limiter == nil {
+					limiter = &middleware.WindowLimiter{Max: 10, Window: 15 * time.Minute}
+				}
+				h := handlers.StaffHandler{Logger: logger, Service: deps.Staff}
+				r.With(middleware.LimitByIP(limiter)).Post("/auth/login", h.Login)
+			}
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.StaffAuth(deps.AdminToken, sessions))
+				mountAdmin(r, deps, logger, rec)
+			})
 		})
 	}
 	if deps.Profiles != nil {
@@ -93,24 +119,57 @@ func NewRouter(deps Deps) http.Handler {
 	return r
 }
 
-func mountAdmin(r chi.Router, deps Deps, logger *slog.Logger) {
-	if deps.Gateway != nil {
-		admin := handlers.Admin{Logger: logger, Service: deps.Gateway}
-		r.Post("/gateways", admin.CreateGateway)
-		r.Get("/gateways", admin.ListGateways)
-		r.Post("/gateways/{id}/revoke", admin.RevokeGateway)
-		r.Get("/sms/stats", admin.Stats)
+// mountAdmin registers the panel routes. Moderators get the read pages, reports and
+// bans; account deletion, gateways, staff and the audit log need the admin role.
+func mountAdmin(r chi.Router, deps Deps, logger *slog.Logger, rec handlers.AuditRecorder) {
+	if deps.Staff != nil {
+		h := handlers.StaffHandler{Logger: logger, Service: deps.Staff}
+		r.Post("/auth/logout", h.Logout)
+		r.Get("/me", h.Me)
+		r.Post("/me/password", h.ChangePassword)
 	}
+	users := handlers.AdminUsers{Logger: logger, Moderation: deps.Moderation, Profiles: deps.Profiles, Audit: rec}
 	if deps.Moderation != nil {
-		users := handlers.AdminUsers{Logger: logger, Moderation: deps.Moderation, Profiles: deps.Profiles}
 		r.Get("/reports", users.Reports)
 		r.Post("/reports/{id}/resolve", users.ResolveReport)
 		r.Post("/users/{id}/block", users.BlockUser)
 		r.Post("/users/{id}/unblock", users.UnblockUser)
-		if deps.Profiles != nil {
+	}
+	if deps.Admin != nil {
+		panel := handlers.AdminPanel{Logger: logger, Service: deps.Admin}
+		r.Get("/overview", panel.Overview)
+		r.Get("/users", panel.Users)
+		r.Get("/users/{id}", panel.User)
+		r.Get("/users/{id}/trips", panel.UserTrips)
+		r.Get("/users/{id}/bookings", panel.UserBookings)
+		r.Get("/users/{id}/reviews", panel.UserReviews)
+	}
+	if deps.Analytics != nil {
+		stats := handlers.Analytics{Logger: logger, Service: deps.Analytics}
+		r.Get("/analytics/activity", stats.Activity)
+	}
+
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequireAdmin)
+		if deps.Gateway != nil {
+			admin := handlers.Admin{Logger: logger, Service: deps.Gateway, Audit: rec}
+			r.Post("/gateways", admin.CreateGateway)
+			r.Get("/gateways", admin.ListGateways)
+			r.Post("/gateways/{id}/revoke", admin.RevokeGateway)
+			r.Get("/sms/stats", admin.Stats)
+		}
+		if deps.Moderation != nil && deps.Profiles != nil {
 			r.Post("/users/delete", users.DeleteAccount)
 		}
-	}
+		if deps.Staff != nil {
+			h := handlers.StaffHandler{Logger: logger, Service: deps.Staff}
+			r.Get("/staff", h.List)
+			r.Post("/staff", h.Create)
+			r.Patch("/staff/{id}", h.Update)
+			r.Post("/staff/{id}/password", h.ResetPassword)
+			r.Get("/audit", h.Audit)
+		}
+	})
 }
 
 func mountProduct(r chi.Router, deps Deps, logger *slog.Logger) {
@@ -129,6 +188,9 @@ func mountProduct(r chi.Router, deps Deps, logger *slog.Logger) {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.UserAuth(deps.JWTSecret, deps.Users))
+		if deps.Activity != nil {
+			r.Use(middleware.TrackActivity(deps.Activity))
+		}
 		if deps.Limiter != nil {
 			r.Use(middleware.RateLimit(deps.Limiter))
 		}

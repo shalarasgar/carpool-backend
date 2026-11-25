@@ -210,18 +210,74 @@ codes are stored.
 
 `GET /media/{file}` serves uploaded photos (public, cacheable).
 
+## Admin: staff accounts and roles
+
+Every `/admin/v1` route except sign-in needs `Authorization: Bearer <token>`, where the token is
+either a staff session token (below) or the static `ADMIN_TOKEN`. The static token acts as an
+admin without an account: use it to create the first accounts, for scripts and in emergencies;
+the audit log names it `ADMIN_TOKEN`. Anything else gets `401 UNAUTHORIZED`.
+
+Two roles. **admin** can do everything. **moderator** gets the overview, reports (list, resolve),
+users (search, card, tabs, block, unblock) and analytics; account deletion, SMS gateways, staff
+management and the audit log answer `403 FORBIDDEN`.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/admin/v1/auth/login` | No token. `{login, password}` → `{token, expires_at, staff}`. The session lasts 12 h. Wrong login, wrong password and a disabled account all give `401 INVALID_CREDENTIALS`. At most 10 attempts per client address per 15 min (`429 RATE_LIMITED` with `Retry-After`). Logins are case-insensitive. |
+| POST | `/admin/v1/auth/logout` | Ends the session in use → `204`. |
+| GET | `/admin/v1/me` | The signed-in account (staff object). With the static token: `{name: "ADMIN_TOKEN", role: "admin", via_token: true}`. |
+| POST | `/admin/v1/me/password` | `{current_password, new_password}` → `204`. Ends the account's other sessions. `401 INVALID_CREDENTIALS` for a wrong current password, `403` with the static token. |
+| GET | `/admin/v1/staff` | Admin. `{items: [staff]}`, active accounts first. |
+| POST | `/admin/v1/staff` | Admin. `{login, name, role, password}` → `201` staff. `login`: 3–32 of `a–z 0–9 . _ -`, starting with a letter or digit, stored lowercase; `name` 1–80 characters; `role` `admin|moderator`; `password` 10–72 bytes. `422 VALIDATION_ERROR` with `field`, `409 LOGIN_TAKEN`. |
+| PATCH | `/admin/v1/staff/{id}` | Admin. `{name?, role?, disabled?}` → staff. Disabling ends the account's sessions. `409 SELF_CHANGE` for one's own role or `disabled`; `409 LAST_ADMIN` when no active admin would remain. |
+| POST | `/admin/v1/staff/{id}/password` | Admin. `{password}` → `204`. Sets a new password and ends every session of that account. |
+| GET | `/admin/v1/audit?staff_id=&user_id=&action=&page=&limit=` | Admin. The audit log, newest first: `{items: [{id, staff_id?, staff_name, action, target_user_id?, target?, note?, created_at}], has_more}`. `user_id` filters entries about one app account. Actions: `staff.login`, `staff.create`, `staff.role`, `staff.disable`, `staff.enable`, `staff.update` (rename), `staff.password_reset`, `staff.password_change`, `report.resolve` (target: report id), `user.block`, `user.unblock`, `user.delete` (note: masked phone), `gateway.create`, `gateway.revoke`. |
+
+Staff object: `{id, login, name, role, created_at, last_login_at, disabled, disabled_at?}`.
+Passwords are stored as bcrypt hashes and session tokens as SHA-256; neither is ever returned or
+logged.
+
 ## Admin: moderation
 
-All need `Authorization: Bearer <ADMIN_TOKEN>`. Error messages follow `Accept-Language` like the
+Admin token or staff session (see above). Error messages follow `Accept-Language` like the
 product API.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/admin/v1/reports?status=open|resolved&page=&limit=` | Report queue, oldest first. Without `status`, every report. Items: `id, reporter_id, reporter_name, reported_user_id, reported_name, reported_blocked, reported_deleted, trip_id?, reason, details?, status, created_at, resolved_at?`. No phone numbers. |
+| GET | `/admin/v1/reports?status=&reason=&reported_user_id=&reporter_id=&page=&limit=` | Report queue, oldest first. Every filter is optional: `status` `open|resolved`, `reason` one of the report reasons, the two ids UUIDs (`422` otherwise). Items: `id, reporter_id, reporter_name, reported_user_id, reported_name, reported_blocked, reported_deleted, trip_id?, reason, details?, status, created_at, resolved_at?`, plus the reported user's history across all reports: `reported_reports` (total), `reported_open_reports`, `reported_reporters` (distinct people). No phone numbers. |
 | POST | `/admin/v1/reports/{id}/resolve` | Closes a report → `204`. Idempotent. |
 | POST | `/admin/v1/users/{id}/block` | Bans an account → `204`. The user cannot sign in, every request gets `403 USER_BLOCKED`, sessions and push tokens are removed. |
 | POST | `/admin/v1/users/{id}/unblock` | Lifts the ban → `204`. |
-| POST | `/admin/v1/users/delete` | `{phone}` → `204`. Deletes the account that owns the number, exactly like `DELETE /v1/me`. For deletion requests received outside the app (the website); check first that the requester owns the number. `404` when no account has it, `409 TRIP_IN_PROGRESS` as above. |
+| POST | `/admin/v1/users/delete` | Admin. `{phone, user_id?}` → `204` (`user_id` only links the audit entry to the account). Deletes the account that owns the number, exactly like `DELETE /v1/me`. For deletion requests received outside the app (the website); check first that the requester owns the number. `404` when no account has it, `409 TRIP_IN_PROGRESS` as above. |
+
+## Admin: panel
+
+Read-only routes for the admin panel, open to both roles. Unlike the product API they return
+phone numbers, because support needs them.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/admin/v1/overview` | Dashboard in one call: `{day_start, reports:{open}, users:{total, new_today, blocked}, trips:{upcoming, new_today}, bookings:{pending, new_today}, sms:{pending, failed_today, gateways_active, last_heartbeat_at}}`. "Today" starts at local midnight in `APP_TIMEZONE`; `day_start` is that instant. `users.total` excludes deleted accounts; `new_today` counts every registration of the day; `trips.upcoming` is `active`, `full` and `in_progress`; `last_heartbeat_at` is the newest heartbeat of an active gateway, `null` if none. |
+| GET | `/admin/v1/users?q=&status=&page=&limit=` | Account search, newest first. `q` (≤ 100 characters) matches the full name, case-insensitive, when it has letters, and the phone when it has 3 or more digits (spaces, `+` and `-` are ignored, so `65 12` finds `+99365 12…`). Empty `q` lists every account. `status`: empty = not deleted, `active` = neither blocked nor deleted, `blocked` (banned, deleted ones included), `deleted`. Items: `id, phone?, first_name, last_name, photo_url?, rating_avg, rating_count, blocked, deleted, created_at, open_reports`. |
+| GET | `/admin/v1/users/{id}` | Account card, deleted and banned accounts included. The list fields plus `bio?, locale, deleted_at?, vehicles` (vehicle objects, plate included) and `activity`: `trips_upcoming, trips_completed, trips_cancelled` (as driver), `driver_cancellations` (bookings on their trips that the driver cancelled, whole-trip cancellations included), `bookings_active, bookings_completed, passenger_cancellations` (as passenger), `reports_against, reports_against_open, reporters` (distinct people), `reports_filed, blocked_by` (users who blocked them). `404` for an unknown or malformed id. |
+| GET | `/admin/v1/users/{id}/trips?scope=upcoming|history&page=&limit=` | Trips the account drives, exactly as `GET /v1/me/trips` returns them to that driver. |
+| GET | `/admin/v1/users/{id}/bookings?scope=upcoming|history&page=&limit=` | The account's bookings as a passenger, exactly as `GET /v1/me/bookings` returns them to that passenger (the driver's phone appears on approved and completed bookings). |
+| GET | `/admin/v1/users/{id}/reviews?page=&limit=` | Reviews the account received, as `GET /v1/users/{id}/reviews`. |
+
+## Admin: analytics
+
+When people use the app, for pricing ad slots by hour. Both roles. The API counts the
+distinct signed-in users of every authenticated `/v1` request per local hour and per local day
+(`APP_TIMEZONE`). The ids of the current hour and day live only in memory, to count each person
+once; only the counts are written (`activity_hours`, `activity_days`), every minute and on
+shutdown. A restart within an hour or day counts that bucket again from zero and the larger
+count is kept, so figures around a deploy are slightly low, never high. The app's notification
+badge asks the API every 45 s while the app is open, so an open app counts in every hour it is
+open.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/admin/v1/analytics/activity?days=` | `days` 1–90 (default 28, `422` otherwise), today included. Returns `{timezone, from, to, tracking_since, days, hours, heatmap, peaks}`. `from` is local midnight of the first day, `to` now. `tracking_since` is the first counted hour (`null` before anyone was counted). `days`: `[{day: "YYYY-MM-DD", users}]`, every day from the first counted one in the period to today, zeros included. `hours`: the last 48 hours up to the current one, `[{hour_start, users}]`, zeros included. `heatmap`: 168 slots `{weekday (1 = Monday … 7 = Sunday), hour (0–23), avg, max}`: the mean distinct users of that hour of the week over the period (from `tracking_since` if later; quiet hours count as zero; the running hour is left out) and the busiest single one. `peaks`: up to five slots with the highest `avg`, busiest first. |
 
 ## App-store review login
 

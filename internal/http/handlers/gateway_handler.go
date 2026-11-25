@@ -11,6 +11,7 @@ import (
 	httperr "github.com/shalarasgar/carpool-backend/internal/http/errors"
 	"github.com/shalarasgar/carpool-backend/internal/http/middleware"
 	"github.com/shalarasgar/carpool-backend/internal/smsqueue"
+	"github.com/shalarasgar/carpool-backend/internal/staff"
 )
 
 // GatewayService is the phone-facing queue.
@@ -152,6 +153,7 @@ type gatewayResponse struct {
 type Admin struct {
 	Logger  *slog.Logger
 	Service GatewayService
+	Audit   AuditRecorder
 }
 
 // CreateGateway returns a new API key once.
@@ -167,6 +169,7 @@ func (h Admin) CreateGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := toGateway(gw)
 	resp.APIKey = raw
+	audit(h.Audit, r, staff.Entry{Action: staff.ActionGatewayCreate, Target: gw.ID, Note: gw.Name})
 	httperr.WriteJSON(w, http.StatusCreated, resp)
 }
 
@@ -186,10 +189,12 @@ func (h Admin) ListGateways(w http.ResponseWriter, r *http.Request) {
 
 // RevokeGateway disables a phone.
 func (h Admin) RevokeGateway(w http.ResponseWriter, r *http.Request) {
-	if err := h.Service.RevokeGateway(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	if err := h.Service.RevokeGateway(r.Context(), id); err != nil {
 		writeErr(w, h.Logger, err)
 		return
 	}
+	audit(h.Audit, r, staff.Entry{Action: staff.ActionGatewayRevoke, Target: id})
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -98,6 +98,20 @@ func run() error {
 	}, logger)
 	go jobs.NewReaper(tripSvc, time.Minute, logger.With("job", "trip_lifecycle")).Run(ctx)
 
+	// Validated by config, so this cannot fail on a started server.
+	appLoc, err := time.LoadLocation(cfg.TimeZone)
+	if err != nil {
+		return err
+	}
+
+	// Distinct users per hour and day, counts only. Written every minute and on shutdown.
+	activitySvc := service.NewActivity(appDB, appLoc)
+	go jobs.NewReaper(activitySvc, time.Minute, logger.With("job", "activity")).Run(ctx)
+
+	// Panel accounts. Expired sessions are swept hourly.
+	staffSvc := service.NewStaff(appDB, logger.With("component", "staff"))
+	go jobs.NewReaper(staffSvc, time.Hour, logger.With("job", "staff_sessions")).Run(ctx)
+
 	if cfg.PushEnabled() {
 		fcm, err := push.LoadFCM(cfg.FCMCredentialsFile)
 		if err != nil {
@@ -129,6 +143,10 @@ func run() error {
 		Bookings:   service.NewBookings(appDB),
 		PushTokens: service.NewPushTokens(appDB),
 		Moderation: service.NewModeration(appDB),
+		Admin:      service.NewAdmin(appDB, appLoc),
+		Analytics:  service.NewAnalytics(appDB, appLoc),
+		Staff:      staffSvc,
+		Activity:   activitySvc,
 		Limiter:    &middleware.WindowLimiter{Max: cfg.APIRatePerMin, Window: time.Minute},
 		MediaDir:   cfg.MediaDir,
 	})
@@ -161,6 +179,10 @@ func run() error {
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown: %w", err)
+		}
+		// The last counts since the previous minute's flush.
+		if err := activitySvc.Maintain(shutdownCtx); err != nil {
+			logger.Error("activity flush failed", "err", err)
 		}
 		return nil
 	}

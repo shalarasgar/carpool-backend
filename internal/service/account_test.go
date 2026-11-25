@@ -120,10 +120,10 @@ func TestDeleteAccountByPhone(t *testing.T) {
 // fakeModeration records what reaches the store.
 type fakeModeration struct {
 	ModerationStore
-	blocks   [][2]string
-	reports  []ride.ReportInput
-	statuses []ride.ReportStatus
-	limits   []int
+	blocks  [][2]string
+	reports []ride.ReportInput
+	filters []ride.ReportFilter
+	limits  []int
 }
 
 func (f *fakeModeration) BlockUser(_ context.Context, blocker, blocked string) error {
@@ -136,8 +136,8 @@ func (f *fakeModeration) CreateReport(_ context.Context, in ride.ReportInput) (s
 	return "report-1", nil
 }
 
-func (f *fakeModeration) Reports(_ context.Context, status ride.ReportStatus, _, limit int) ([]ride.Report, bool, error) {
-	f.statuses, f.limits = append(f.statuses, status), append(f.limits, limit)
+func (f *fakeModeration) Reports(_ context.Context, filter ride.ReportFilter, _, limit int) ([]ride.Report, bool, error) {
+	f.filters, f.limits = append(f.filters, filter), append(f.limits, limit)
 	return nil, false, nil
 }
 
@@ -186,23 +186,40 @@ func TestReportIsNormalizedBeforeItIsStored(t *testing.T) {
 	}
 }
 
-func TestReportsListValidatesStatusAndBoundsThePage(t *testing.T) {
+func TestReportsListValidatesFiltersAndBoundsThePage(t *testing.T) {
 	t.Parallel()
 	store := &fakeModeration{}
 	m := NewModeration(store)
 	ctx := context.Background()
 
-	if _, _, err := m.Reports(ctx, "closed", 1, 20); !errors.Is(err, ride.ErrValidation) {
-		t.Fatalf("unknown status err = %v", err)
+	var field *ride.FieldError
+	for _, tc := range []struct {
+		filter ride.ReportFilter
+		field  string
+	}{
+		{ride.ReportFilter{Status: "closed"}, "status"},
+		{ride.ReportFilter{Reason: "rude"}, "reason"},
+		{ride.ReportFilter{ReportedUserID: "not-a-uuid"}, "reported_user_id"},
+		{ride.ReportFilter{ReporterID: "not-a-uuid"}, "reporter_id"},
+	} {
+		if _, _, err := m.Reports(ctx, tc.filter, 1, 20); !errors.As(err, &field) || field.Field != tc.field {
+			t.Fatalf("filter %+v err = %v, want field %s", tc.filter, err, tc.field)
+		}
 	}
-	if _, _, err := m.Reports(ctx, "", 0, 5000); err != nil {
+	if len(store.filters) != 0 {
+		t.Fatalf("an invalid filter reached the store: %v", store.filters)
+	}
+
+	if _, _, err := m.Reports(ctx, ride.ReportFilter{}, 0, 5000); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := m.Reports(ctx, ride.ReportOpen, 1, 10); err != nil {
+	full := ride.ReportFilter{Status: ride.ReportOpen, Reason: ride.ReasonFraud,
+		ReportedUserID: "00000000-0000-4000-8000-000000000001", ReporterID: "00000000-0000-4000-8000-000000000002"}
+	if _, _, err := m.Reports(ctx, full, 1, 10); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.statuses) != 2 || store.statuses[0] != "" || store.statuses[1] != ride.ReportOpen {
-		t.Fatalf("statuses = %v", store.statuses)
+	if len(store.filters) != 2 || store.filters[0] != (ride.ReportFilter{}) || store.filters[1] != full {
+		t.Fatalf("filters = %v", store.filters)
 	}
 	if store.limits[0] != 20 || store.limits[1] != 10 {
 		t.Fatalf("limits = %v", store.limits)

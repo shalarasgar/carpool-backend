@@ -120,20 +120,31 @@ func (db *AppDB) CreateReport(ctx context.Context, in ride.ReportInput) (string,
 }
 
 // Reports lists reports for a moderator, oldest first so the queue is worked in order.
-// An empty status lists every report.
-func (db *AppDB) Reports(ctx context.Context, status ride.ReportStatus, page, limit int) ([]ride.Report, bool, error) {
+// Empty filter fields match every report. Each report carries the reported user's report
+// history.
+func (db *AppDB) Reports(ctx context.Context, f ride.ReportFilter, page, limit int) ([]ride.Report, bool, error) {
 	rows, err := db.pool.Query(ctx, `
 		SELECT r.id::text, r.reporter_id::text, btrim(a.first_name || ' ' || a.last_name),
 		       r.reported_user_id::text, btrim(b.first_name || ' ' || b.last_name),
 		       b.is_blocked, b.deleted_at IS NOT NULL,
-		       COALESCE(r.trip_id::text, ''), r.reason, COALESCE(r.details, ''), r.status, r.created_at, r.resolved_at
+		       COALESCE(r.trip_id::text, ''), r.reason, COALESCE(r.details, ''), r.status, r.created_at, r.resolved_at,
+		       h.total, h.open, h.reporters
 		FROM reports r
 		JOIN users a ON a.id = r.reporter_id
 		JOIN users b ON b.id = r.reported_user_id
-		WHERE $1 = '' OR r.status = $1
+		CROSS JOIN LATERAL (
+			SELECT COUNT(*)::int AS total,
+			       (COUNT(*) FILTER (WHERE x.status = 'open'))::int AS open,
+			       COUNT(DISTINCT x.reporter_id)::int AS reporters
+			FROM reports x WHERE x.reported_user_id = r.reported_user_id
+		) h
+		WHERE ($1 = '' OR r.status = $1)
+		  AND ($2 = '' OR r.reason = $2)
+		  AND ($3 = '' OR r.reported_user_id = NULLIF($3, '')::uuid)
+		  AND ($4 = '' OR r.reporter_id = NULLIF($4, '')::uuid)
 		ORDER BY r.created_at, r.id
-		LIMIT $2 OFFSET $3
-	`, string(status), limit+1, (page-1)*limit)
+		LIMIT $5 OFFSET $6
+	`, string(f.Status), string(f.Reason), f.ReportedUserID, f.ReporterID, limit+1, (page-1)*limit)
 	if err != nil {
 		return nil, false, dbErr("reports", err)
 	}
@@ -143,7 +154,8 @@ func (db *AppDB) Reports(ctx context.Context, status ride.ReportStatus, page, li
 		var r ride.Report
 		var reason, st string
 		if err := rows.Scan(&r.ID, &r.ReporterID, &r.ReporterName, &r.ReportedUserID, &r.ReportedName,
-			&r.ReportedBlocked, &r.ReportedDeleted, &r.TripID, &reason, &r.Details, &st, &r.CreatedAt, &r.ResolvedAt); err != nil {
+			&r.ReportedBlocked, &r.ReportedDeleted, &r.TripID, &reason, &r.Details, &st, &r.CreatedAt, &r.ResolvedAt,
+			&r.ReportedReports, &r.ReportedOpenReports, &r.ReportedReporters); err != nil {
 			return nil, false, dbErr("scan report", err)
 		}
 		r.Reason, r.Status = ride.ReportReason(reason), ride.ReportStatus(st)

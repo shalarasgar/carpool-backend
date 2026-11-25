@@ -13,7 +13,7 @@ type ModerationStore interface {
 	UnblockUser(ctx context.Context, blockerID, blockedID string) error
 	BlockedUsers(ctx context.Context, blockerID string) ([]ride.UserSummary, error)
 	CreateReport(ctx context.Context, in ride.ReportInput) (string, error)
-	Reports(ctx context.Context, status ride.ReportStatus, page, limit int) ([]ride.Report, bool, error)
+	Reports(ctx context.Context, f ride.ReportFilter, page, limit int) ([]ride.Report, bool, error)
 	ResolveReport(ctx context.Context, id string, now time.Time) error
 	SetUserBlocked(ctx context.Context, userID string, blocked bool) error
 }
@@ -62,13 +62,13 @@ func (m *Moderation) Report(ctx context.Context, in ride.ReportInput) (string, e
 	return m.store.CreateReport(ctx, in)
 }
 
-// Reports lists the moderation queue. An empty status lists every report.
-func (m *Moderation) Reports(ctx context.Context, status ride.ReportStatus, page, limit int) ([]ride.Report, bool, error) {
-	if status != "" && !status.Valid() {
-		return nil, false, &ride.FieldError{Field: "status", Reason: "unknown"}
+// Reports lists the moderation queue. Empty filter fields match every report.
+func (m *Moderation) Reports(ctx context.Context, f ride.ReportFilter, page, limit int) ([]ride.Report, bool, error) {
+	if err := f.Validate(); err != nil {
+		return nil, false, err
 	}
 	page, limit = pageBounds(page, limit)
-	return m.store.Reports(ctx, status, page, limit)
+	return m.store.Reports(ctx, f, page, limit)
 }
 
 // Resolve closes a report.

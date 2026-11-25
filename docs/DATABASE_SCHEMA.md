@@ -63,6 +63,19 @@ Partial unique index: one pending/approved booking per passenger per trip.
 
 **device_tokens** — present for a future push channel; unused today.
 
+**activity_hours** — `hour_start` (start of a local hour, primary key), `users` (distinct
+signed-in users in that hour). **activity_days** — `day` (local date, primary key), `users`.
+Counts only, no user ids: the API counts in memory and upserts with `GREATEST`. See
+API_DOCUMENTATION.md, Admin: analytics.
+
+**staff** — admin panel accounts: `login` (unique, lowercase, CHECKed format), `name`, `role`
+(`admin` | `moderator`), `password_hash` (bcrypt), `created_by`, `last_login_at`, `disabled_at`.
+**staff_sessions** — `token_hash` (SHA-256 of the bearer token, primary key), `staff_id`,
+`expires_at`; removed on sign-out, password change or reset, disabling, and hourly once expired.
+**staff_audit** — append-only log: `staff_id` (NULL for the static `ADMIN_TOKEN`), `staff_name`
+(a copy), `action`, `target_user_id` (the app account concerned), `target`, `note`,
+`created_at`. See API_DOCUMENTATION.md, Admin: staff accounts and roles.
+
 ## Lifecycle values
 
 - Trip: `active` (published) → `full` ↔ `active` → `in_progress` → `completed` | `expired`; `cancelled` from active/full.

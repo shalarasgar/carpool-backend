@@ -24,8 +24,9 @@ import (
 )
 
 type e2e struct {
-	t   *testing.T
-	srv *httptest.Server
+	t        *testing.T
+	srv      *httptest.Server
+	activity *service.Activity
 }
 
 func (e e2e) call(method, path, token string, body any, wantStatus int) map[string]any {
@@ -103,16 +104,18 @@ func startE2E(t *testing.T, reviewPhone string, phones ...string) e2e {
 	}
 	authSvc := service.NewAuth(db, authCfg, nil)
 	trips := service.NewTrips(db, service.TripConfig{OverlapBuffer: 30 * time.Minute}, nil)
+	activity := service.NewActivity(db, nil)
 	router := NewRouter(Deps{
 		Auth: authSvc, DevMode: true, JWTSecret: "e2e-jwt-secret-0123456789", Users: db,
 		AdminToken: e2eAdminToken,
 		Profiles:   service.NewProfiles(db, media.Disk{Dir: t.TempDir()}, authSvc, nil),
 		Trips:      trips, Bookings: service.NewBookings(db), Moderation: service.NewModeration(db),
+		Admin: service.NewAdmin(db, nil), Analytics: service.NewAnalytics(db, nil), Activity: activity, Staff: service.NewStaff(db, nil),
 		Limiter: &middleware.WindowLimiter{Max: 1000, Window: time.Minute}, MediaDir: t.TempDir(),
 	})
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
-	return e2e{t: t, srv: srv}
+	return e2e{t: t, srv: srv, activity: activity}
 }
 
 func errCode(body map[string]any) string {

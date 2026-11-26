@@ -35,6 +35,9 @@ www.{$SITE_DOMAIN} {
 	}
 	handle {
 		root * /srv/admin
+		# File names carry no build hash, so the browser must ask on every load whether a
+		# file changed (a cheap 304 when it did not); otherwise it keeps an old build.
+		header Cache-Control "no-cache"
 		# Section addresses (/users, /reports/...) are app routes: serve index.html.
 		try_files {path} /index.html
 		file_server
